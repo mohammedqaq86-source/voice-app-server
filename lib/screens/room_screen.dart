@@ -1,13 +1,42 @@
 import 'package:flutter/material.dart';
+import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import '../models/room.dart';
 
-class RoomScreen extends StatelessWidget {
+class RoomScreen extends StatefulWidget {
   const RoomScreen({super.key, required this.room});
 
   final Room room;
 
   @override
+  State<RoomScreen> createState() => _RoomScreenState();
+}
+
+class _RoomScreenState extends State<RoomScreen> {
+  late final YoutubePlayerController youtubeController;
+
+  @override
+  void initState() {
+    super.initState();
+
+    youtubeController = YoutubePlayerController(
+      initialVideoId: widget.room.videoId,
+      flags: const YoutubePlayerFlags(
+        autoPlay: false,
+        mute: false,
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    youtubeController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final room = widget.room;
+
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
@@ -83,45 +112,19 @@ class RoomScreen extends StatelessWidget {
                   height: 220,
                   margin: const EdgeInsets.symmetric(horizontal: 14),
                   width: double.infinity,
+                  clipBehavior: Clip.antiAlias,
                   decoration: BoxDecoration(
                     color: Colors.black,
                     borderRadius: BorderRadius.circular(24),
-                    image: DecorationImage(
-                      image: NetworkImage(room.image),
-                      fit: BoxFit.cover,
-                      colorFilter: ColorFilter.mode(
-                        Colors.black.withOpacity(0.35),
-                        BlendMode.darken,
-                      ),
-                    ),
                   ),
-                  clipBehavior: Clip.antiAlias,
-                  child: Stack(
-                    children: [
-                      Center(
-                        child: Icon(
-                          Icons.play_circle_fill_rounded,
-                          size: 86,
-                          color: Colors.white.withOpacity(0.9),
-                        ),
-                      ),
-                      Positioned(
-                        bottom: 16,
-                        right: 18,
-                        left: 18,
-                        child: Text(
-                          room.title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            height: 1.15,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                      ),
-                    ],
+                  child: YoutubePlayer(
+                    controller: youtubeController,
+                    showVideoProgressIndicator: true,
+                    progressIndicatorColor: Colors.red,
+                    progressColors: const ProgressBarColors(
+                      playedColor: Colors.red,
+                      handleColor: Colors.redAccent,
+                    ),
                   ),
                 ),
 
@@ -140,18 +143,27 @@ class RoomScreen extends StatelessWidget {
                       ),
                     ),
                     child: ListView(
-                      children: const [
+                      children: [
                         Text(
+                          room.title,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
                           'محمد دخل الروم',
                           style: TextStyle(color: Colors.white54),
                         ),
-                        SizedBox(height: 12),
-                        ChatBubble(
+                        const SizedBox(height: 12),
+                        const ChatBubble(
                           name: 'فهد',
                           message: 'الصوت واضح؟',
                         ),
-                        SizedBox(height: 12),
-                        ChatBubble(
+                        const SizedBox(height: 12),
+                        const ChatBubble(
                           name: 'ناصر',
                           message: 'شغل المقطع اللي بعده',
                         ),
