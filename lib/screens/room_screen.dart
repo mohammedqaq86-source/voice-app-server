@@ -11,180 +11,225 @@ class RoomScreen extends StatelessWidget {
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
-        backgroundColor: const Color(0xFF121214),
-        body: SafeArea(
-          child: Column(
-            children: [
-              Container(
-                height: 74,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Row(
-                  children: [
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(
-                        Icons.close,
-                        color: Colors.white,
-                        size: 32,
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Icon(
-                        Icons.settings,
-                        color: Colors.white,
-                        size: 30,
-                      ),
-                    ),
-                    const Spacer(),
-                    const Text(
-                      'voice',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 32,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Icon(
-                        Icons.search,
-                        color: Colors.white,
-                        size: 30,
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () {},
-                      icon: const Icon(
-                        Icons.groups_rounded,
-                        color: Colors.white,
-                        size: 32,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              Container(
-                height: 220,
-                width: double.infinity,
-                color: Colors.black,
-                child: Stack(
-                  children: [
-                    Center(
-                      child: Icon(
-                        Icons.play_circle_fill_rounded,
-                        size: 82,
-                        color: Colors.white.withOpacity(0.85),
-                      ),
-                    ),
-                    Positioned(
-                      bottom: 14,
-                      right: 16,
-                      left: 16,
-                      child: Text(
-                        room.title,
-                        style: const TextStyle(
+        backgroundColor: Colors.transparent,
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xFF20114F),
+                Color(0xFF4B245B),
+                Color(0xFF102C6B),
+                Color(0xFF5A372D),
+              ],
+            ),
+          ),
+          child: SafeArea(
+            child: Column(
+              children: [
+                Container(
+                  height: 74,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: const Icon(
+                          Icons.close,
                           color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
+                          size: 32,
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-
-              Expanded(
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  color: const Color(0xFF2A2A2D),
-                  child: ListView(
-                    children: const [
-                      Text(
-                        'محمد دخل الروم',
-                        style: TextStyle(color: Colors.white54),
+                      IconButton(
+                        onPressed: () {},
+                        icon: const Icon(
+                          Icons.settings,
+                          color: Colors.white,
+                          size: 30,
+                        ),
                       ),
-                      SizedBox(height: 12),
-                      ChatBubble(
-                        name: 'فهد',
-                        message: 'الصوت واضح؟',
+                      const Spacer(),
+                      const Text(
+                        'voice',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 32,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
-                      SizedBox(height: 12),
-                      ChatBubble(
-                        name: 'ناصر',
-                        message: 'شغل المقطع اللي بعده',
+                      const Spacer(),
+                      IconButton(
+                        onPressed: () {},
+                        icon: const Icon(
+                          Icons.search,
+                          color: Colors.white,
+                          size: 30,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () {},
+                        icon: const Icon(
+                          Icons.groups_rounded,
+                          color: Colors.white,
+                          size: 32,
+                        ),
                       ),
                     ],
                   ),
                 ),
-              ),
 
-              Container(
-                padding: const EdgeInsets.all(14),
-                color: const Color(0xFF3A3A3D),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 78,
-                      height: 78,
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
+                Container(
+                  height: 220,
+                  margin: const EdgeInsets.symmetric(horizontal: 14),
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    borderRadius: BorderRadius.circular(24),
+                    image: DecorationImage(
+                      image: NetworkImage(room.image),
+                      fit: BoxFit.cover,
+                      colorFilter: ColorFilter.mode(
+                        Colors.black.withOpacity(0.35),
+                        BlendMode.darken,
                       ),
-                      child: const Icon(Icons.mic, size: 38),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Container(
-                        height: 50,
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        decoration: BoxDecoration(
-                          color: Colors.white12,
-                          borderRadius: BorderRadius.circular(22),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(
+                    children: [
+                      Center(
+                        child: Icon(
+                          Icons.play_circle_fill_rounded,
+                          size: 86,
+                          color: Colors.white.withOpacity(0.9),
                         ),
-                        alignment: Alignment.centerRight,
-                        child: const Text(
-                          'دردش',
-                          style: TextStyle(
-                            color: Colors.white54,
-                            fontSize: 17,
+                      ),
+                      Positioned(
+                        bottom: 16,
+                        right: 18,
+                        left: 18,
+                        child: Text(
+                          room.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            height: 1.15,
+                            fontWeight: FontWeight.w900,
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 10),
-                    const Icon(Icons.image,
-                        color: Colors.white, size: 28),
-                    const SizedBox(width: 10),
-                    const Icon(Icons.link,
-                        color: Colors.white, size: 28),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
 
-              Container(
-                height: 72,
-                width: double.infinity,
-                color: const Color(0xFF4A4A4D),
-                alignment: Alignment.center,
-                child: Container(
-                  height: 52,
-                  margin: const EdgeInsets.symmetric(horizontal: 18),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  alignment: Alignment.center,
-                  child: const Text(
-                    'مكان الإعلان',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                const SizedBox(height: 12),
+
+                Expanded(
+                  child: Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.symmetric(horizontal: 14),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.22),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.08),
+                      ),
+                    ),
+                    child: ListView(
+                      children: const [
+                        Text(
+                          'محمد دخل الروم',
+                          style: TextStyle(color: Colors.white54),
+                        ),
+                        SizedBox(height: 12),
+                        ChatBubble(
+                          name: 'فهد',
+                          message: 'الصوت واضح؟',
+                        ),
+                        SizedBox(height: 12),
+                        ChatBubble(
+                          name: 'ناصر',
+                          message: 'شغل المقطع اللي بعده',
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
+
+                const SizedBox(height: 12),
+
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 14),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.28),
+                    borderRadius: BorderRadius.circular(26),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 76,
+                        height: 76,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.92),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.mic, size: 38),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Container(
+                          height: 50,
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(22),
+                          ),
+                          alignment: Alignment.centerRight,
+                          child: const Text(
+                            'دردش',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 17,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      const Icon(Icons.image, color: Colors.white, size: 28),
+                      const SizedBox(width: 10),
+                      const Icon(Icons.link, color: Colors.white, size: 28),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 10),
+
+                Container(
+                  height: 72,
+                  width: double.infinity,
+                  color: Colors.black.withOpacity(0.22),
+                  alignment: Alignment.center,
+                  child: Container(
+                    height: 52,
+                    margin: const EdgeInsets.symmetric(horizontal: 18),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.92),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    alignment: Alignment.center,
+                    child: const Text(
+                      'مكان الإعلان',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
