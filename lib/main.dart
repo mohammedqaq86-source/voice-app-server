@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'models/room.dart';
 
 void main() {
   runApp(const VoiceApp());
@@ -19,22 +20,6 @@ class VoiceApp extends StatelessWidget {
       home: const HomeScreen(),
     );
   }
-}
-
-class Room {
-  final String title;
-  final String image;
-  final int users;
-  final int speakers;
-  final bool hasYoutube;
-
-  const Room({
-    required this.title,
-    required this.image,
-    required this.users,
-    required this.speakers,
-    required this.hasYoutube,
-  });
 }
 
 class HomeScreen extends StatelessWidget {
@@ -257,8 +242,11 @@ class RoomCard extends StatelessWidget {
                     const SizedBox(height: 8),
                     Row(
                       children: [
-                        const Icon(Icons.people_alt_rounded,
-                            size: 18, color: Colors.black45),
+                        const Icon(
+                          Icons.people_alt_rounded,
+                          size: 18,
+                          color: Colors.black45,
+                        ),
                         const SizedBox(width: 4),
                         Text(
                           '${room.users}',
@@ -268,8 +256,11 @@ class RoomCard extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(width: 14),
-                        const Icon(Icons.mic_rounded,
-                            size: 18, color: Colors.black45),
+                        const Icon(
+                          Icons.mic_rounded,
+                          size: 18,
+                          color: Colors.black45,
+                        ),
                         const SizedBox(width: 4),
                         Text(
                           '${room.speakers}',
@@ -331,13 +322,19 @@ class RoomScreen extends StatelessWidget {
                   children: [
                     IconButton(
                       onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close,
-                          color: Colors.white, size: 32),
+                      icon: const Icon(
+                        Icons.close,
+                        color: Colors.white,
+                        size: 32,
+                      ),
                     ),
                     IconButton(
                       onPressed: () {},
-                      icon: const Icon(Icons.settings,
-                          color: Colors.white, size: 30),
+                      icon: const Icon(
+                        Icons.settings,
+                        color: Colors.white,
+                        size: 30,
+                      ),
                     ),
                     const Spacer(),
                     const Text(
@@ -351,19 +348,23 @@ class RoomScreen extends StatelessWidget {
                     const Spacer(),
                     IconButton(
                       onPressed: () {},
-                      icon: const Icon(Icons.search,
-                          color: Colors.white, size: 30),
+                      icon: const Icon(
+                        Icons.search,
+                        color: Colors.white,
+                        size: 30,
+                      ),
                     ),
                     IconButton(
                       onPressed: () {},
-                      icon: const Icon(Icons.groups_rounded,
-                          color: Colors.white, size: 32),
+                      icon: const Icon(
+                        Icons.groups_rounded,
+                        color: Colors.white,
+                        size: 32,
+                      ),
                     ),
                   ],
                 ),
               ),
-
-              // YouTube Area
               Container(
                 height: 220,
                 width: double.infinity,
@@ -393,8 +394,6 @@ class RoomScreen extends StatelessWidget {
                   ],
                 ),
               ),
-
-              // Chat Area
               Expanded(
                 child: Container(
                   width: double.infinity,
@@ -420,8 +419,6 @@ class RoomScreen extends StatelessWidget {
                   ),
                 ),
               ),
-
-              // Bottom Controls
               Container(
                 padding: const EdgeInsets.all(14),
                 color: const Color(0xFF3A3A3D),
@@ -434,10 +431,7 @@ class RoomScreen extends StatelessWidget {
                         color: Colors.white,
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(
-                        Icons.mic,
-                        size: 38,
-                      ),
+                      child: const Icon(Icons.mic, size: 38),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
@@ -459,16 +453,12 @@ class RoomScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 10),
-                    const Icon(Icons.image,
-                        color: Colors.white, size: 28),
+                    const Icon(Icons.image, color: Colors.white, size: 28),
                     const SizedBox(width: 10),
-                    const Icon(Icons.link,
-                        color: Colors.white, size: 28),
+                    const Icon(Icons.link, color: Colors.white, size: 28),
                   ],
                 ),
               ),
-
-              // Ad Banner
               Container(
                 height: 72,
                 width: double.infinity,
@@ -484,9 +474,7 @@ class RoomScreen extends StatelessWidget {
                   alignment: Alignment.center,
                   child: const Text(
                     'مكان الإعلان',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
               ),
