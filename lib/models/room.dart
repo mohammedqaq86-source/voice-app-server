@@ -4,6 +4,7 @@ class Room {
   final int users;
   final int speakers;
   final bool hasYoutube;
+  final bool isPrivate;
 
   const Room({
     required this.title,
@@ -11,5 +12,6 @@ class Room {
     required this.users,
     required this.speakers,
     required this.hasYoutube,
+    this.isPrivate = false,
   });
 }
