@@ -13,11 +13,12 @@ class RoomScreen extends StatefulWidget {
 
 class _RoomScreenState extends State<RoomScreen> {
   late final YoutubePlayerController youtubeController;
-
   final TextEditingController chatController = TextEditingController();
 
   bool isMicOn = false;
   bool isRoomOwner = true;
+  bool everyoneCanUseMic = false;
+  late bool isPrivateRoom;
 
   final String currentUserName = 'Mohammed';
   final String activeSpeakerName = 'Fahad';
@@ -28,6 +29,7 @@ class _RoomScreenState extends State<RoomScreen> {
     ChatItem.system(
       text: 'Mohammed joined the room',
       image: 'https://i.pravatar.cc/150?img=11',
+      isLeader: true,
     ),
     ChatItem.message(name: 'Fahad', message: 'Is the audio clear?'),
     ChatItem.message(name: 'Nasser', message: 'Play the next video'),
@@ -40,6 +42,7 @@ class _RoomScreenState extends State<RoomScreen> {
       role: 'Owner',
       isSpeaker: true,
       hasMicPermission: true,
+      isLeader: true,
     ),
     RoomUser(
       name: 'Fahad',
@@ -81,6 +84,7 @@ class _RoomScreenState extends State<RoomScreen> {
   @override
   void initState() {
     super.initState();
+    isPrivateRoom = widget.room.isPrivate;
 
     youtubeController = YoutubePlayerController(
       initialVideoId: widget.room.videoId,
@@ -106,7 +110,7 @@ class _RoomScreenState extends State<RoomScreen> {
   }
 
   bool get hasMicPermission {
-    return currentUser.hasMicPermission;
+    return currentUser.hasMicPermission || everyoneCanUseMic || isRoomOwner;
   }
 
   Future<void> confirmExitRoom() async {
@@ -137,14 +141,14 @@ class _RoomScreenState extends State<RoomScreen> {
 
   void sendMessage() {
     final text = chatController.text.trim();
-
     if (text.isEmpty) return;
 
     setState(() {
       chatItems.add(
         ChatItem.message(
-          name: 'You',
+          name: currentUserName,
           message: text,
+          isLeader: currentUser.isLeader,
         ),
       );
     });
@@ -155,9 +159,7 @@ class _RoomScreenState extends State<RoomScreen> {
   void toggleMic() {
     if (!hasMicPermission) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('You do not have mic permission'),
-        ),
+        const SnackBar(content: Text('You do not have mic permission')),
       );
       return;
     }
@@ -168,7 +170,7 @@ class _RoomScreenState extends State<RoomScreen> {
   }
 
   void sendInvite() {
-    final canInvite = !widget.room.isPrivate || isRoomOwner;
+    final canInvite = !isPrivateRoom || isRoomOwner;
 
     if (!canInvite) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -180,9 +182,95 @@ class _RoomScreenState extends State<RoomScreen> {
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Invite system opened'),
+      const SnackBar(content: Text('Invite system opened')),
+    );
+  }
+
+  void openRoomSettings() {
+    if (!isRoomOwner) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Only the room leader can open settings')),
+      );
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF17112F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
       ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return Directionality(
+              textDirection: TextDirection.ltr,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(22, 22, 22, 30),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 52,
+                      height: 5,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    const Text(
+                      'Room Settings',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    SwitchListTile(
+                      value: everyoneCanUseMic,
+                      activeColor: Colors.white,
+                      title: const Text(
+                        'Everyone can use mic',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      subtitle: const Text(
+                        'Allow all users to turn on their mic',
+                        style: TextStyle(color: Colors.white54),
+                      ),
+                      onChanged: (value) {
+                        setState(() {
+                          everyoneCanUseMic = value;
+                        });
+                        setSheetState(() {});
+                      },
+                    ),
+                    SwitchListTile(
+                      value: isPrivateRoom,
+                      activeColor: Colors.white,
+                      title: const Text(
+                        'Private room',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      subtitle: const Text(
+                        'Only invited users can enter',
+                        style: TextStyle(color: Colors.white54),
+                      ),
+                      onChanged: (value) {
+                        setState(() {
+                          isPrivateRoom = value;
+                        });
+                        setSheetState(() {});
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -205,6 +293,7 @@ class _RoomScreenState extends State<RoomScreen> {
               ? Icons.mic_rounded
               : Icons.mic_off_rounded,
           image: user.image,
+          isLeader: user.isLeader,
         ),
       );
     });
@@ -220,16 +309,15 @@ class _RoomScreenState extends State<RoomScreen> {
       chatItems.add(
         ChatItem.system(
           text: '${user.name} was kicked from the room',
-          icon: Icons.sports_mma_rounded,
+          customIcon: '🦵',
           image: user.image,
+          isLeader: user.isLeader,
         ),
       );
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${user.name} can only rejoin by invitation'),
-      ),
+      SnackBar(content: Text('${user.name} can only rejoin by invitation')),
     );
   }
 
@@ -252,13 +340,11 @@ class _RoomScreenState extends State<RoomScreen> {
               decoration: BoxDecoration(
                 color: Colors.black.withOpacity(0.34),
                 border: Border(
-                  right: BorderSide(
-                    color: Colors.white.withOpacity(0.08),
-                  ),
+                  right: BorderSide(color: Colors.white.withOpacity(0.08)),
                 ),
               ),
               child: Directionality(
-                textDirection: TextDirection.rtl,
+                textDirection: TextDirection.ltr,
                 child: ListView.builder(
                   itemCount: users.length,
                   itemBuilder: (context, index) {
@@ -288,10 +374,7 @@ class _RoomScreenState extends State<RoomScreen> {
             begin: const Offset(-1, 0),
             end: Offset.zero,
           ).animate(
-            CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeOut,
-            ),
+            CurvedAnimation(parent: animation, curve: Curves.easeOut),
           ),
           child: child,
         );
@@ -358,7 +441,7 @@ class _RoomScreenState extends State<RoomScreen> {
                         ),
                       ),
                       IconButton(
-                        onPressed: () {},
+                        onPressed: openRoomSettings,
                         icon: const Icon(
                           Icons.settings,
                           color: Colors.white,
@@ -434,7 +517,9 @@ class _RoomScreenState extends State<RoomScreen> {
                           return SystemMessage(
                             text: item.text,
                             icon: item.icon,
+                            customIcon: item.customIcon,
                             image: item.image,
+                            isLeader: item.isLeader,
                           );
                         }
 
@@ -443,6 +528,7 @@ class _RoomScreenState extends State<RoomScreen> {
                           child: ChatBubble(
                             name: item.name,
                             message: item.message,
+                            isLeader: item.isLeader,
                           ),
                         );
                       },
@@ -558,7 +644,9 @@ class ChatItem {
   final bool isSystem;
   final String text;
   final IconData? icon;
+  final String? customIcon;
   final String? image;
+  final bool isLeader;
   final String name;
   final String message;
 
@@ -566,7 +654,9 @@ class ChatItem {
     required this.isSystem,
     this.text = '',
     this.icon,
+    this.customIcon,
     this.image,
+    this.isLeader = false,
     this.name = '',
     this.message = '',
   });
@@ -574,24 +664,30 @@ class ChatItem {
   factory ChatItem.system({
     required String text,
     IconData? icon,
+    String? customIcon,
     String? image,
+    bool isLeader = false,
   }) {
     return ChatItem._(
       isSystem: true,
       text: text,
       icon: icon,
+      customIcon: customIcon,
       image: image,
+      isLeader: isLeader,
     );
   }
 
   factory ChatItem.message({
     required String name,
     required String message,
+    bool isLeader = false,
   }) {
     return ChatItem._(
       isSystem: false,
       name: name,
       message: message,
+      isLeader: isLeader,
     );
   }
 }
@@ -601,6 +697,7 @@ class RoomUser {
   final String image;
   final String role;
   final bool isSpeaker;
+  final bool isLeader;
   bool hasMicPermission;
 
   RoomUser({
@@ -609,7 +706,35 @@ class RoomUser {
     required this.role,
     required this.isSpeaker,
     required this.hasMicPermission,
+    this.isLeader = false,
   });
+}
+
+class CrownBadge extends StatelessWidget {
+  const CrownBadge({
+    super.key,
+    this.size = 28,
+  });
+
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Transform.rotate(
+      angle: -0.35,
+      child: Icon(
+        Icons.workspace_premium_rounded,
+        color: Colors.white.withOpacity(0.95),
+        size: size,
+        shadows: [
+          Shadow(
+            color: Colors.black.withOpacity(0.45),
+            blurRadius: 4,
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class SpeakerAvatar extends StatefulWidget {
@@ -648,10 +773,7 @@ class _SpeakerAvatarState extends State<SpeakerAvatar>
       begin: 1,
       end: 1.08,
     ).animate(
-      CurvedAnimation(
-        parent: controller,
-        curve: Curves.easeInOut,
-      ),
+      CurvedAnimation(parent: controller, curve: Curves.easeInOut),
     );
 
     if (widget.isSpeaking) {
@@ -689,30 +811,42 @@ class _SpeakerAvatarState extends State<SpeakerAvatar>
           builder: (context, child) {
             return Transform.scale(
               scale: widget.isSpeaking ? scaleAnimation.value : 1,
-              child: Container(
-                padding: EdgeInsets.all(widget.isSpeaking ? 4 : 2),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  boxShadow: widget.isSpeaking
-                      ? [
-                          BoxShadow(
-                            color: Colors.white.withOpacity(0.42),
-                            blurRadius: 18,
-                            spreadRadius: 2,
-                          ),
-                        ]
-                      : [],
-                  border: Border.all(
-                    color: widget.isSpeaking
-                        ? Colors.white
-                        : Colors.white.withOpacity(0.28),
-                    width: widget.isSpeaking ? 3 : 1,
+              child: Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    padding: EdgeInsets.all(widget.isSpeaking ? 4 : 2),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      boxShadow: widget.isSpeaking
+                          ? [
+                              BoxShadow(
+                                color: Colors.white.withOpacity(0.42),
+                                blurRadius: 18,
+                                spreadRadius: 2,
+                              ),
+                            ]
+                          : [],
+                      border: Border.all(
+                        color: widget.isSpeaking
+                            ? Colors.white
+                            : Colors.white.withOpacity(0.28),
+                        width: widget.isSpeaking ? 3 : 1,
+                      ),
+                    ),
+                    child: CircleAvatar(
+                      radius: widget.radius,
+                      backgroundImage: NetworkImage(widget.user.image),
+                    ),
                   ),
-                ),
-                child: CircleAvatar(
-                  radius: widget.radius,
-                  backgroundImage: NetworkImage(widget.user.image),
-                ),
+                  if (widget.user.isLeader)
+                    Positioned(
+                      top: -14,
+                      left: -8,
+                      child: CrownBadge(size: widget.radius * 0.95),
+                    ),
+                ],
               ),
             );
           },
@@ -767,9 +901,21 @@ class RoomUserTile extends StatelessWidget {
       ),
       child: Row(
         children: [
-          CircleAvatar(
-            radius: 26,
-            backgroundImage: NetworkImage(user.image),
+          Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.center,
+            children: [
+              CircleAvatar(
+                radius: 26,
+                backgroundImage: NetworkImage(user.image),
+              ),
+              if (user.isLeader)
+                const Positioned(
+                  top: -15,
+                  left: -8,
+                  child: CrownBadge(size: 25),
+                ),
+            ],
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -789,9 +935,7 @@ class RoomUserTile extends StatelessWidget {
                 user.hasMicPermission
                     ? Icons.mic_none_rounded
                     : Icons.mic_off_rounded,
-                color: user.hasMicPermission
-                    ? Colors.white
-                    : Colors.redAccent,
+                color: user.hasMicPermission ? Colors.white : Colors.redAccent,
                 size: 24,
               ),
             ),
@@ -830,12 +974,16 @@ class SystemMessage extends StatelessWidget {
     super.key,
     required this.text,
     this.icon,
+    this.customIcon,
     this.image,
+    this.isLeader = false,
   });
 
   final String text;
   final IconData? icon;
+  final String? customIcon;
   final String? image;
+  final bool isLeader;
 
   @override
   Widget build(BuildContext context) {
@@ -844,9 +992,28 @@ class SystemMessage extends StatelessWidget {
       child: Row(
         children: [
           if (image != null) ...[
-            CircleAvatar(
-              radius: 11,
-              backgroundImage: NetworkImage(image!),
+            Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                CircleAvatar(
+                  radius: 11,
+                  backgroundImage: NetworkImage(image!),
+                ),
+                if (isLeader)
+                  const Positioned(
+                    top: -11,
+                    left: -7,
+                    child: CrownBadge(size: 17),
+                  ),
+              ],
+            ),
+            const SizedBox(width: 10),
+          ],
+          if (customIcon != null) ...[
+            Text(
+              customIcon!,
+              style: const TextStyle(fontSize: 15),
             ),
             const SizedBox(width: 6),
           ],
@@ -878,10 +1045,12 @@ class ChatBubble extends StatelessWidget {
     super.key,
     required this.name,
     required this.message,
+    this.isLeader = false,
   });
 
   final String name;
   final String message;
+  final bool isLeader;
 
   @override
   Widget build(BuildContext context) {
@@ -895,11 +1064,23 @@ class ChatBubble extends StatelessWidget {
         text: TextSpan(
           children: [
             TextSpan(
-              text: '$name: ',
+              text: '$name ',
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
               ),
+            ),
+            if (isLeader)
+              const WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4),
+                  child: CrownBadge(size: 15),
+                ),
+              ),
+            const TextSpan(
+              text: ': ',
+              style: TextStyle(color: Colors.white),
             ),
             TextSpan(
               text: message,
