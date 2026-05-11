@@ -14,6 +14,17 @@ class RoomScreen extends StatefulWidget {
 class _RoomScreenState extends State<RoomScreen> {
   late final YoutubePlayerController youtubeController;
 
+  final List<SpeakerUser> speakers = const [
+    SpeakerUser(name: 'محمد', image: 'https://i.pravatar.cc/150?img=11'),
+    SpeakerUser(name: 'فهد', image: 'https://i.pravatar.cc/150?img=12'),
+    SpeakerUser(name: 'ناصر', image: 'https://i.pravatar.cc/150?img=13'),
+    SpeakerUser(name: 'سلمان', image: 'https://i.pravatar.cc/150?img=14'),
+    SpeakerUser(name: 'تركي', image: 'https://i.pravatar.cc/150?img=15'),
+    SpeakerUser(name: 'عبدالله', image: 'https://i.pravatar.cc/150?img=16'),
+  ];
+
+  final String activeSpeakerName = 'فهد';
+
   @override
   void initState() {
     super.initState();
@@ -35,7 +46,10 @@ class _RoomScreenState extends State<RoomScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final room = widget.room;
+    final activeSpeaker = speakers.firstWhere(
+      (speaker) => speaker.name == activeSpeakerName,
+      orElse: () => speakers.first,
+    );
 
     return Directionality(
       textDirection: TextDirection.rtl,
@@ -58,7 +72,7 @@ class _RoomScreenState extends State<RoomScreen> {
             child: Column(
               children: [
                 Container(
-                  height: 74,
+                  height: 78,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   child: Row(
                     children: [
@@ -79,13 +93,11 @@ class _RoomScreenState extends State<RoomScreen> {
                         ),
                       ),
                       const Spacer(),
-                      const Text(
-                        'voice',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 32,
-                          fontWeight: FontWeight.w900,
-                        ),
+                      SpeakerAvatar(
+                        speaker: activeSpeaker,
+                        radius: 26,
+                        isSpeaking: true,
+                        showName: true,
                       ),
                       const Spacer(),
                       IconButton(
@@ -109,7 +121,7 @@ class _RoomScreenState extends State<RoomScreen> {
                 ),
 
                 Container(
-                  height: 220,
+                  height: 200,
                   margin: const EdgeInsets.symmetric(horizontal: 14),
                   width: double.infinity,
                   clipBehavior: Clip.antiAlias,
@@ -143,27 +155,18 @@ class _RoomScreenState extends State<RoomScreen> {
                       ),
                     ),
                     child: ListView(
-                      children: [
+                      children: const [
                         Text(
-                          room.title,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
                           'محمد دخل الروم',
                           style: TextStyle(color: Colors.white54),
                         ),
-                        const SizedBox(height: 12),
-                        const ChatBubble(
+                        SizedBox(height: 12),
+                        ChatBubble(
                           name: 'فهد',
                           message: 'الصوت واضح؟',
                         ),
-                        const SizedBox(height: 12),
-                        const ChatBubble(
+                        SizedBox(height: 12),
+                        ChatBubble(
                           name: 'ناصر',
                           message: 'شغل المقطع اللي بعده',
                         ),
@@ -245,6 +248,143 @@ class _RoomScreenState extends State<RoomScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class SpeakerUser {
+  final String name;
+  final String image;
+
+  const SpeakerUser({
+    required this.name,
+    required this.image,
+  });
+}
+
+class SpeakerAvatar extends StatefulWidget {
+  const SpeakerAvatar({
+    super.key,
+    required this.speaker,
+    required this.radius,
+    required this.isSpeaking,
+    this.showName = true,
+  });
+
+  final SpeakerUser speaker;
+  final double radius;
+  final bool isSpeaking;
+  final bool showName;
+
+  @override
+  State<SpeakerAvatar> createState() => _SpeakerAvatarState();
+}
+
+class _SpeakerAvatarState extends State<SpeakerAvatar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController controller;
+  late final Animation<double> scaleAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+
+    controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+
+    scaleAnimation = Tween<double>(
+      begin: 1,
+      end: 1.08,
+    ).animate(
+      CurvedAnimation(
+        parent: controller,
+        curve: Curves.easeInOut,
+      ),
+    );
+
+    if (widget.isSpeaking) {
+      controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant SpeakerAvatar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (widget.isSpeaking && !controller.isAnimating) {
+      controller.repeat(reverse: true);
+    }
+
+    if (!widget.isSpeaking && controller.isAnimating) {
+      controller.stop();
+      controller.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AnimatedBuilder(
+          animation: scaleAnimation,
+          builder: (context, child) {
+            return Transform.scale(
+              scale: widget.isSpeaking ? scaleAnimation.value : 1,
+              child: Container(
+                padding: EdgeInsets.all(widget.isSpeaking ? 4 : 2),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: widget.isSpeaking
+                      ? [
+                          BoxShadow(
+                            color: Colors.white.withOpacity(0.42),
+                            blurRadius: 18,
+                            spreadRadius: 2,
+                          ),
+                        ]
+                      : [],
+                  border: Border.all(
+                    color: widget.isSpeaking
+                        ? Colors.white
+                        : Colors.white.withOpacity(0.28),
+                    width: widget.isSpeaking ? 3 : 1,
+                  ),
+                ),
+                child: CircleAvatar(
+                  radius: widget.radius,
+                  backgroundImage: NetworkImage(widget.speaker.image),
+                ),
+              ),
+            );
+          },
+        ),
+        if (widget.showName) ...[
+          const SizedBox(height: 6),
+          SizedBox(
+            width: widget.radius * 2.4,
+            child: Text(
+              widget.speaker.name,
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }
