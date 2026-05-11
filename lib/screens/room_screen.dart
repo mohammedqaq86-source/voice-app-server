@@ -14,16 +14,69 @@ class RoomScreen extends StatefulWidget {
 class _RoomScreenState extends State<RoomScreen> {
   late final YoutubePlayerController youtubeController;
 
-  final List<SpeakerUser> speakers = const [
-    SpeakerUser(name: 'محمد', image: 'https://i.pravatar.cc/150?img=11'),
-    SpeakerUser(name: 'فهد', image: 'https://i.pravatar.cc/150?img=12'),
-    SpeakerUser(name: 'ناصر', image: 'https://i.pravatar.cc/150?img=13'),
-    SpeakerUser(name: 'سلمان', image: 'https://i.pravatar.cc/150?img=14'),
-    SpeakerUser(name: 'تركي', image: 'https://i.pravatar.cc/150?img=15'),
-    SpeakerUser(name: 'عبدالله', image: 'https://i.pravatar.cc/150?img=16'),
+  final TextEditingController chatController = TextEditingController();
+
+  bool isMicOn = false;
+  bool isRoomOwner = true;
+
+  final String currentUserName = 'Mohammed';
+  final String activeSpeakerName = 'Fahad';
+
+  final List<String> kickedUsers = [];
+
+  final List<ChatItem> chatItems = [
+    ChatItem.system(
+      text: 'Mohammed joined the room',
+      image: 'https://i.pravatar.cc/150?img=11',
+    ),
+    ChatItem.message(name: 'Fahad', message: 'Is the audio clear?'),
+    ChatItem.message(name: 'Nasser', message: 'Play the next video'),
   ];
 
-  final String activeSpeakerName = 'فهد';
+  final List<RoomUser> users = [
+    RoomUser(
+      name: 'Mohammed',
+      image: 'https://i.pravatar.cc/150?img=11',
+      role: 'Owner',
+      isSpeaker: true,
+      hasMicPermission: true,
+    ),
+    RoomUser(
+      name: 'Fahad',
+      image: 'https://i.pravatar.cc/150?img=12',
+      role: 'Speaker',
+      isSpeaker: true,
+      hasMicPermission: true,
+    ),
+    RoomUser(
+      name: 'Nasser',
+      image: 'https://i.pravatar.cc/150?img=13',
+      role: 'Speaker',
+      isSpeaker: true,
+      hasMicPermission: false,
+    ),
+    RoomUser(
+      name: 'Salman',
+      image: 'https://i.pravatar.cc/150?img=14',
+      role: 'Listener',
+      isSpeaker: false,
+      hasMicPermission: false,
+    ),
+    RoomUser(
+      name: 'Turki',
+      image: 'https://i.pravatar.cc/150?img=15',
+      role: 'Listener',
+      isSpeaker: false,
+      hasMicPermission: false,
+    ),
+    RoomUser(
+      name: 'Abdullah',
+      image: 'https://i.pravatar.cc/150?img=16',
+      role: 'Listener',
+      isSpeaker: false,
+      hasMicPermission: false,
+    ),
+  ];
 
   @override
   void initState() {
@@ -41,14 +94,234 @@ class _RoomScreenState extends State<RoomScreen> {
   @override
   void dispose() {
     youtubeController.dispose();
+    chatController.dispose();
     super.dispose();
+  }
+
+  RoomUser get currentUser {
+    return users.firstWhere(
+      (user) => user.name == currentUserName,
+      orElse: () => users.first,
+    );
+  }
+
+  bool get hasMicPermission {
+    return currentUser.hasMicPermission;
+  }
+
+  Future<void> confirmExitRoom() async {
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Leave room'),
+          content: const Text('Are you sure you want to leave this room?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('No'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Yes'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldExit == true && mounted) {
+      Navigator.pop(context);
+    }
+  }
+
+  void sendMessage() {
+    final text = chatController.text.trim();
+
+    if (text.isEmpty) return;
+
+    setState(() {
+      chatItems.add(
+        ChatItem.message(
+          name: 'You',
+          message: text,
+        ),
+      );
+    });
+
+    chatController.clear();
+  }
+
+  void toggleMic() {
+    if (!hasMicPermission) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('You do not have mic permission'),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      isMicOn = !isMicOn;
+    });
+  }
+
+  void sendInvite() {
+    final canInvite = !widget.room.isPrivate || isRoomOwner;
+
+    if (!canInvite) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Only the room owner can invite in private rooms'),
+        ),
+      );
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Invite system opened'),
+      ),
+    );
+  }
+
+  void toggleUserMicPermission(RoomUser user) {
+    if (!isRoomOwner) return;
+
+    setState(() {
+      user.hasMicPermission = !user.hasMicPermission;
+
+      if (!user.hasMicPermission && user.name == currentUserName) {
+        isMicOn = false;
+      }
+
+      chatItems.add(
+        ChatItem.system(
+          text: user.hasMicPermission
+              ? '${user.name} got the mic'
+              : 'Mic removed from ${user.name}',
+          icon: user.hasMicPermission
+              ? Icons.mic_rounded
+              : Icons.mic_off_rounded,
+          image: user.image,
+        ),
+      );
+    });
+  }
+
+  void kickUser(RoomUser user) {
+    if (!isRoomOwner) return;
+
+    setState(() {
+      users.remove(user);
+      kickedUsers.add(user.name);
+
+      chatItems.add(
+        ChatItem.system(
+          text: '${user.name} was kicked from the room',
+          icon: Icons.sports_mma_rounded,
+          image: user.image,
+        ),
+      );
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${user.name} can only rejoin by invitation'),
+      ),
+    );
+  }
+
+  void showRoomUsers() {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'room-users',
+      barrierColor: Colors.black.withOpacity(0.35),
+      transitionDuration: const Duration(milliseconds: 260),
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              width: 330,
+              height: double.infinity,
+              padding: const EdgeInsets.fromLTRB(18, 90, 18, 20),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.34),
+                border: Border(
+                  right: BorderSide(
+                    color: Colors.white.withOpacity(0.08),
+                  ),
+                ),
+              ),
+              child: Directionality(
+                textDirection: TextDirection.rtl,
+                child: ListView.builder(
+                  itemCount: users.length,
+                  itemBuilder: (context, index) {
+                    final user = users[index];
+
+                    return RoomUserTile(
+                      user: user,
+                      isAdmin: isRoomOwner,
+                      onToggleMicPermission: () {
+                        toggleUserMicPermission(user);
+                      },
+                      onKick: () {
+                        Navigator.pop(context);
+                        kickUser(user);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(-1, 0),
+            end: Offset.zero,
+          ).animate(
+            CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOut,
+            ),
+          ),
+          child: child,
+        );
+      },
+    );
+  }
+
+  IconData micIcon() {
+    if (!hasMicPermission) return Icons.mic_off_rounded;
+    if (isMicOn) return Icons.mic_rounded;
+    return Icons.mic_none_rounded;
+  }
+
+  Color micBackgroundColor() {
+    if (!hasMicPermission) return Colors.white.withOpacity(0.55);
+    if (isMicOn) return Colors.red;
+    return Colors.white.withOpacity(0.92);
+  }
+
+  Color micIconColor() {
+    if (!hasMicPermission) return Colors.black45;
+    if (isMicOn) return Colors.white;
+    return Colors.black;
   }
 
   @override
   Widget build(BuildContext context) {
-    final activeSpeaker = speakers.firstWhere(
-      (speaker) => speaker.name == activeSpeakerName,
-      orElse: () => speakers.first,
+    final activeSpeaker = users.firstWhere(
+      (user) => user.name == activeSpeakerName,
+      orElse: () => users.first,
     );
 
     return Directionality(
@@ -77,7 +350,7 @@ class _RoomScreenState extends State<RoomScreen> {
                   child: Row(
                     children: [
                       IconButton(
-                        onPressed: () => Navigator.pop(context),
+                        onPressed: confirmExitRoom,
                         icon: const Icon(
                           Icons.close,
                           color: Colors.white,
@@ -94,10 +367,11 @@ class _RoomScreenState extends State<RoomScreen> {
                       ),
                       const Spacer(),
                       SpeakerAvatar(
-                        speaker: activeSpeaker,
+                        user: activeSpeaker,
                         radius: 26,
-                        isSpeaking: true,
-                        showName: true,
+                        isSpeaking:
+                            isMicOn && activeSpeaker.name == currentUserName,
+                        showName: false,
                       ),
                       const Spacer(),
                       IconButton(
@@ -109,7 +383,7 @@ class _RoomScreenState extends State<RoomScreen> {
                         ),
                       ),
                       IconButton(
-                        onPressed: () {},
+                        onPressed: showRoomUsers,
                         icon: const Icon(
                           Icons.groups_rounded,
                           color: Colors.white,
@@ -119,7 +393,6 @@ class _RoomScreenState extends State<RoomScreen> {
                     ],
                   ),
                 ),
-
                 Container(
                   height: 200,
                   margin: const EdgeInsets.symmetric(horizontal: 14),
@@ -139,9 +412,7 @@ class _RoomScreenState extends State<RoomScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 Expanded(
                   child: Container(
                     width: double.infinity,
@@ -154,29 +425,31 @@ class _RoomScreenState extends State<RoomScreen> {
                         color: Colors.white.withOpacity(0.08),
                       ),
                     ),
-                    child: ListView(
-                      children: const [
-                        Text(
-                          'محمد دخل الروم',
-                          style: TextStyle(color: Colors.white54),
-                        ),
-                        SizedBox(height: 12),
-                        ChatBubble(
-                          name: 'فهد',
-                          message: 'الصوت واضح؟',
-                        ),
-                        SizedBox(height: 12),
-                        ChatBubble(
-                          name: 'ناصر',
-                          message: 'شغل المقطع اللي بعده',
-                        ),
-                      ],
+                    child: ListView.builder(
+                      itemCount: chatItems.length,
+                      itemBuilder: (context, index) {
+                        final item = chatItems[index];
+
+                        if (item.isSystem) {
+                          return SystemMessage(
+                            text: item.text,
+                            icon: item.icon,
+                            image: item.image,
+                          );
+                        }
+
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: ChatBubble(
+                            name: item.name,
+                            message: item.message,
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 12),
-
                 Container(
                   margin: const EdgeInsets.symmetric(horizontal: 14),
                   padding: const EdgeInsets.all(14),
@@ -186,44 +459,73 @@ class _RoomScreenState extends State<RoomScreen> {
                   ),
                   child: Row(
                     children: [
-                      Container(
-                        width: 76,
-                        height: 76,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.92),
-                          shape: BoxShape.circle,
+                      GestureDetector(
+                        onTap: toggleMic,
+                        child: Container(
+                          width: 76,
+                          height: 76,
+                          decoration: BoxDecoration(
+                            color: micBackgroundColor(),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            micIcon(),
+                            size: 38,
+                            color: micIconColor(),
+                          ),
                         ),
-                        child: const Icon(Icons.mic, size: 38),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
-                        child: Container(
-                          height: 50,
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(22),
-                          ),
-                          alignment: Alignment.centerRight,
-                          child: const Text(
-                            'دردش',
-                            style: TextStyle(
+                        child: TextField(
+                          controller: chatController,
+                          onSubmitted: (_) => sendMessage(),
+                          style: const TextStyle(color: Colors.white),
+                          decoration: InputDecoration(
+                            hintText: 'Chat',
+                            hintStyle: const TextStyle(
                               color: Colors.white54,
                               fontSize: 17,
+                            ),
+                            filled: true,
+                            fillColor: Colors.white.withOpacity(0.12),
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 14,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(22),
+                              borderSide: BorderSide.none,
                             ),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 10),
-                      const Icon(Icons.image, color: Colors.white, size: 28),
-                      const SizedBox(width: 10),
-                      const Icon(Icons.link, color: Colors.white, size: 28),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        onPressed: sendMessage,
+                        icon: const Icon(
+                          Icons.send_rounded,
+                          color: Colors.white,
+                          size: 27,
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: sendInvite,
+                        icon: const Icon(
+                          Icons.person_add_alt_1_rounded,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                      const Icon(
+                        Icons.image,
+                        color: Colors.white,
+                        size: 27,
+                      ),
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 10),
-
                 Container(
                   height: 72,
                   width: double.infinity,
@@ -238,7 +540,7 @@ class _RoomScreenState extends State<RoomScreen> {
                     ),
                     alignment: Alignment.center,
                     child: const Text(
-                      'مكان الإعلان',
+                      'Ad Space',
                       style: TextStyle(fontWeight: FontWeight.bold),
                     ),
                   ),
@@ -252,26 +554,74 @@ class _RoomScreenState extends State<RoomScreen> {
   }
 }
 
-class SpeakerUser {
+class ChatItem {
+  final bool isSystem;
+  final String text;
+  final IconData? icon;
+  final String? image;
+  final String name;
+  final String message;
+
+  const ChatItem._({
+    required this.isSystem,
+    this.text = '',
+    this.icon,
+    this.image,
+    this.name = '',
+    this.message = '',
+  });
+
+  factory ChatItem.system({
+    required String text,
+    IconData? icon,
+    String? image,
+  }) {
+    return ChatItem._(
+      isSystem: true,
+      text: text,
+      icon: icon,
+      image: image,
+    );
+  }
+
+  factory ChatItem.message({
+    required String name,
+    required String message,
+  }) {
+    return ChatItem._(
+      isSystem: false,
+      name: name,
+      message: message,
+    );
+  }
+}
+
+class RoomUser {
   final String name;
   final String image;
+  final String role;
+  final bool isSpeaker;
+  bool hasMicPermission;
 
-  const SpeakerUser({
+  RoomUser({
     required this.name,
     required this.image,
+    required this.role,
+    required this.isSpeaker,
+    required this.hasMicPermission,
   });
 }
 
 class SpeakerAvatar extends StatefulWidget {
   const SpeakerAvatar({
     super.key,
-    required this.speaker,
+    required this.user,
     required this.radius,
     required this.isSpeaking,
     this.showName = true,
   });
 
-  final SpeakerUser speaker;
+  final RoomUser user;
   final double radius;
   final bool isSpeaking;
   final bool showName;
@@ -361,7 +711,7 @@ class _SpeakerAvatarState extends State<SpeakerAvatar>
                 ),
                 child: CircleAvatar(
                   radius: widget.radius,
-                  backgroundImage: NetworkImage(widget.speaker.image),
+                  backgroundImage: NetworkImage(widget.user.image),
                 ),
               ),
             );
@@ -372,7 +722,7 @@ class _SpeakerAvatarState extends State<SpeakerAvatar>
           SizedBox(
             width: widget.radius * 2.4,
             child: Text(
-              widget.speaker.name,
+              widget.user.name,
               textAlign: TextAlign.center,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -385,6 +735,140 @@ class _SpeakerAvatarState extends State<SpeakerAvatar>
           ),
         ],
       ],
+    );
+  }
+}
+
+class RoomUserTile extends StatelessWidget {
+  const RoomUserTile({
+    super.key,
+    required this.user,
+    required this.isAdmin,
+    required this.onToggleMicPermission,
+    required this.onKick,
+  });
+
+  final RoomUser user;
+  final bool isAdmin;
+  final VoidCallback onToggleMicPermission;
+  final VoidCallback onKick;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: Colors.white.withOpacity(0.05),
+        ),
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 26,
+            backgroundImage: NetworkImage(user.image),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              user.name,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          if (isAdmin) ...[
+            IconButton(
+              onPressed: onToggleMicPermission,
+              icon: Icon(
+                user.hasMicPermission
+                    ? Icons.mic_none_rounded
+                    : Icons.mic_off_rounded,
+                color: user.hasMicPermission
+                    ? Colors.white
+                    : Colors.redAccent,
+                size: 24,
+              ),
+            ),
+            PopupMenuButton<String>(
+              icon: const Icon(
+                Icons.more_vert,
+                color: Colors.white,
+              ),
+              color: const Color(0xFF21153E),
+              onSelected: (value) {
+                if (value == 'kick') {
+                  onKick();
+                }
+              },
+              itemBuilder: (context) {
+                return const [
+                  PopupMenuItem(
+                    value: 'kick',
+                    child: Text(
+                      'Kick',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ];
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class SystemMessage extends StatelessWidget {
+  const SystemMessage({
+    super.key,
+    required this.text,
+    this.icon,
+    this.image,
+  });
+
+  final String text;
+  final IconData? icon;
+  final String? image;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          if (image != null) ...[
+            CircleAvatar(
+              radius: 11,
+              backgroundImage: NetworkImage(image!),
+            ),
+            const SizedBox(width: 6),
+          ],
+          if (icon != null) ...[
+            Icon(
+              icon,
+              color: Colors.white54,
+              size: 16,
+            ),
+            const SizedBox(width: 6),
+          ],
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: Colors.white54,
+                fontSize: 14,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
