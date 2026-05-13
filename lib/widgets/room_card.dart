@@ -71,7 +71,10 @@ class _RoomCardState extends State<RoomCard> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => RoomScreen(room: widget.room),
+        builder: (_) => RoomScreen(
+          room: widget.room,
+          roomId: widget.roomId,
+        ),
       ),
     );
   }
@@ -201,7 +204,6 @@ class _RoomCardState extends State<RoomCard> {
               ],
             ),
           ),
-
           if (isLoading)
             Positioned.fill(
               child: Container(

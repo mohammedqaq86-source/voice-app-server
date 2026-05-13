@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import '../models/room.dart';
+import '../services/room_service.dart';
 
 class RoomScreen extends StatefulWidget {
-  const RoomScreen({super.key, required this.room});
+  const RoomScreen({
+    super.key,
+    required this.room,
+    required this.roomId,
+  });
 
   final Room room;
+  final String roomId;
 
   @override
   State<RoomScreen> createState() => _RoomScreenState();
@@ -139,22 +145,32 @@ class _RoomScreenState extends State<RoomScreen> {
     }
   }
 
-  void sendMessage() {
-    final text = chatController.text.trim();
-    if (text.isEmpty) return;
+Future<void> sendMessage() async {
+  final text = chatController.text.trim();
 
-    setState(() {
-      chatItems.add(
-        ChatItem.message(
-          name: currentUserName,
-          message: text,
-          isLeader: currentUser.isLeader,
-        ),
-      );
-    });
+  if (text.isEmpty) return;
 
-    chatController.clear();
-  }
+  setState(() {
+    chatItems.add(
+      ChatItem.message(
+        name: currentUserName,
+        message: text,
+        isLeader: currentUser.isLeader,
+      ),
+    );
+  });
+
+  await RoomService().sendMessage(
+    roomId: widget.roomId,
+    userId: 'user_mohammed',
+    name: currentUserName,
+    image: currentUser.image,
+    message: text,
+    isLeader: currentUser.isLeader,
+  );
+
+  chatController.clear();
+}
 
   void toggleMic() {
     if (!hasMicPermission) {

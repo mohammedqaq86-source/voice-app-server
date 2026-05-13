@@ -88,14 +88,13 @@ class RoomService {
     });
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> publicOpenRoomsStream() {
-    return _firestore
-        .collection('rooms')
-        .where('isOpen', isEqualTo: true)
-        .where('isPrivate', isEqualTo: false)
-        .orderBy('lastOpenedAt', descending: true)
-        .snapshots();
-  }
+ Stream<QuerySnapshot<Map<String, dynamic>>> publicOpenRoomsStream() {
+  return _firestore
+      .collection('rooms')
+      .where('isOpen', isEqualTo: true)
+      .where('isPrivate', isEqualTo: false)
+      .snapshots();
+}
 
   Stream<QuerySnapshot<Map<String, dynamic>>> myRoomsStream({
     required String ownerId,

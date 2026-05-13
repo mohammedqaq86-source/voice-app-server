@@ -56,7 +56,10 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => RoomScreen(room: newRoom),
+        builder: (_) => RoomScreen(
+          room: newRoom,
+          roomId: roomId,
+        ),
       ),
     );
   }
