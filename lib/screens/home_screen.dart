@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/room.dart';
+import '../services/room_service.dart';
 import '../widgets/room_card.dart';
 import '../widgets/search_box.dart';
 import 'room_screen.dart';
@@ -14,43 +15,11 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final List<Room> rooms = [
-    const Room(
-      title: 'سوالف ووناسة',
-      image: 'https://picsum.photos/400/300?random=1',
-      users: 94,
-      speakers: 7,
-      hasYoutube: true,
-      videoId: 'jfKfPfyJRdk',
-    ),
+  final RoomService roomService = RoomService();
 
-    const Room(
-      title: 'جلسة آخر الليل',
-      image: 'https://picsum.photos/400/300?random=2',
-      users: 76,
-      speakers: 5,
-      hasYoutube: true,
-      videoId: '5qap5aO4i9A',
-    ),
-
-    const Room(
-      title: 'قيمرز الخليج',
-      image: 'https://picsum.photos/400/300?random=3',
-      users: 52,
-      speakers: 4,
-      hasYoutube: false,
-      videoId: 'DWcJFNfaw9c',
-    ),
-
-    const Room(
-      title: 'أغاني وسوالف',
-      image: 'https://picsum.photos/400/300?random=4',
-      users: 41,
-      speakers: 3,
-      hasYoutube: true,
-      videoId: 'hHW1oY26kxQ',
-    ),
-  ];
+  final String currentUserId = 'user_mohammed';
+  final String currentUserName = 'Mohammed';
+  final String currentUserImage = 'https://i.pravatar.cc/150?img=11';
 
   Future<void> openSourcePicker() async {
     final video = await Navigator.push<YoutubeVideo>(
@@ -62,6 +31,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (video == null) return;
 
+    final roomId = await roomService.createRoom(
+      title: video.title,
+      image: video.image,
+      videoId: 'jfKfPfyJRdk',
+      isPrivate: false,
+      ownerId: currentUserId,
+      ownerName: currentUserName,
+      ownerImage: currentUserImage,
+    );
+
     final newRoom = Room(
       title: video.title,
       image: video.image,
@@ -69,11 +48,10 @@ class _HomeScreenState extends State<HomeScreen> {
       speakers: 1,
       hasYoutube: true,
       videoId: 'jfKfPfyJRdk',
+      isPrivate: false,
     );
 
-    setState(() {
-      rooms.insert(0, newRoom);
-    });
+    if (!mounted) return;
 
     Navigator.push(
       context,
@@ -83,20 +61,30 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Room roomFromFirestore(Map<String, dynamic> data) {
+    return Room(
+      title: data['title'] ?? 'Untitled Room',
+      image: data['image'] ?? 'https://picsum.photos/400/300',
+      users: data['usersCount'] ?? 0,
+      speakers: data['speakersCount'] ?? 0,
+      hasYoutube: true,
+      videoId: data['videoId'] ?? 'jfKfPfyJRdk',
+      isPrivate: data['isPrivate'] ?? false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
         backgroundColor: Colors.transparent,
-
         floatingActionButton: FloatingActionButton(
           backgroundColor: Colors.white.withOpacity(0.92),
           foregroundColor: Colors.black,
           onPressed: openSourcePicker,
           child: const Icon(Icons.add, size: 32),
         ),
-
         body: Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(
@@ -110,19 +98,62 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-
           child: SafeArea(
             child: Column(
               children: [
                 const HomeHeader(),
                 const SearchBox(),
-
                 Expanded(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
-                    itemCount: rooms.length,
-                    itemBuilder: (context, index) {
-                      return RoomCard(room: rooms[index]);
+                  child: StreamBuilder(
+                    stream: roomService.publicOpenRoomsStream(),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState ==
+                          ConnectionState.waiting) {
+                        return const Center(
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                          ),
+                        );
+                      }
+
+                      if (snapshot.hasError) {
+                        return Center(
+                          child: Text(
+                            'Error: ${snapshot.error}',
+                            style: const TextStyle(color: Colors.white),
+                            textAlign: TextAlign.center,
+                          ),
+                        );
+                      }
+
+                      final docs = snapshot.data?.docs ?? [];
+
+                      if (docs.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'ما فيه رومات مفتوحة الآن',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        );
+                      }
+
+                      return ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
+                        itemCount: docs.length,
+                        itemBuilder: (context, index) {
+                          final data = docs[index].data();
+                          final room = roomFromFirestore(data);
+
+                          return RoomCard(
+                            room: room,
+                            roomId: docs[index].id,
+                          );
+                        },
+                      );
                     },
                   ),
                 ),
@@ -152,9 +183,7 @@ class HomeHeader extends StatelessWidget {
               color: Colors.white,
             ),
           ),
-
           const Spacer(),
-
           const Text(
             'الرومات العامة',
             style: TextStyle(
@@ -163,9 +192,7 @@ class HomeHeader extends StatelessWidget {
               fontWeight: FontWeight.w900,
             ),
           ),
-
           const Spacer(),
-
           IconButton(
             onPressed: () {},
             icon: const Icon(
