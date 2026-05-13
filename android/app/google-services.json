@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "32831083920",
+    "project_id": "voice-app-bdbc8",
+    "storage_bucket": "voice-app-bdbc8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:32831083920:android:5aad490d691262805a0f15",
+        "android_client_info": {
+          "package_name": "com.example.voice_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDE6LUSgGQjjiwWq8NNzhxy03zvyDYrsRs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
