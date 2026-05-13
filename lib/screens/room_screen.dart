@@ -20,6 +20,7 @@ class RoomScreen extends StatefulWidget {
 class _RoomScreenState extends State<RoomScreen> {
   late final YoutubePlayerController youtubeController;
   final TextEditingController chatController = TextEditingController();
+  final RoomService roomService = RoomService();
 
   bool isMicOn = false;
   bool isRoomOwner = true;
@@ -30,16 +31,6 @@ class _RoomScreenState extends State<RoomScreen> {
   final String activeSpeakerName = 'Fahad';
 
   final List<String> kickedUsers = [];
-
-  final List<ChatItem> chatItems = [
-    ChatItem.system(
-      text: 'Mohammed joined the room',
-      image: 'https://i.pravatar.cc/150?img=11',
-      isLeader: true,
-    ),
-    ChatItem.message(name: 'Fahad', message: 'Is the audio clear?'),
-    ChatItem.message(name: 'Nasser', message: 'Play the next video'),
-  ];
 
   final List<RoomUser> users = [
     RoomUser(
@@ -145,32 +136,22 @@ class _RoomScreenState extends State<RoomScreen> {
     }
   }
 
-Future<void> sendMessage() async {
-  final text = chatController.text.trim();
+  Future<void> sendMessage() async {
+    final text = chatController.text.trim();
 
-  if (text.isEmpty) return;
+    if (text.isEmpty) return;
 
-  setState(() {
-    chatItems.add(
-      ChatItem.message(
-        name: currentUserName,
-        message: text,
-        isLeader: currentUser.isLeader,
-      ),
+    chatController.clear();
+
+    await roomService.sendMessage(
+      roomId: widget.roomId,
+      userId: 'user_mohammed',
+      name: currentUserName,
+      image: currentUser.image,
+      message: text,
+      isLeader: currentUser.isLeader,
     );
-  });
-
-  await RoomService().sendMessage(
-    roomId: widget.roomId,
-    userId: 'user_mohammed',
-    name: currentUserName,
-    image: currentUser.image,
-    message: text,
-    isLeader: currentUser.isLeader,
-  );
-
-  chatController.clear();
-}
+  }
 
   void toggleMic() {
     if (!hasMicPermission) {
@@ -299,20 +280,19 @@ Future<void> sendMessage() async {
       if (!user.hasMicPermission && user.name == currentUserName) {
         isMicOn = false;
       }
-
-      chatItems.add(
-        ChatItem.system(
-          text: user.hasMicPermission
-              ? '${user.name} got the mic'
-              : 'Mic removed from ${user.name}',
-          icon: user.hasMicPermission
-              ? Icons.mic_rounded
-              : Icons.mic_off_rounded,
-          image: user.image,
-          isLeader: user.isLeader,
-        ),
-      );
     });
+
+    roomService.sendSystemMessage(
+      roomId: widget.roomId,
+      text: user.hasMicPermission
+          ? '${user.name} got the mic'
+          : 'Mic removed from ${user.name}',
+      userId: user.name,
+      name: user.name,
+      image: user.image,
+      isLeader: user.isLeader,
+      icon: user.hasMicPermission ? Icons.mic_rounded : Icons.mic_off_rounded,
+    );
   }
 
   void kickUser(RoomUser user) {
@@ -321,16 +301,17 @@ Future<void> sendMessage() async {
     setState(() {
       users.remove(user);
       kickedUsers.add(user.name);
-
-      chatItems.add(
-        ChatItem.system(
-          text: '${user.name} was kicked from the room',
-          customIcon: '🦵',
-          image: user.image,
-          isLeader: user.isLeader,
-        ),
-      );
     });
+
+    roomService.sendSystemMessage(
+      roomId: widget.roomId,
+      text: '${user.name} was kicked from the room',
+      userId: user.name,
+      name: user.name,
+      image: user.image,
+      customIcon: '🦵',
+      isLeader: user.isLeader,
+    );
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('${user.name} can only rejoin by invitation')),
@@ -414,6 +395,35 @@ Future<void> sendMessage() async {
     if (!hasMicPermission) return Colors.black45;
     if (isMicOn) return Colors.white;
     return Colors.black;
+  }
+
+  ChatItem chatItemFromFirestore(Map<String, dynamic> data) {
+    final type = data['type'] ?? 'message';
+
+    if (type == 'system') {
+      IconData? icon;
+
+      if (data['iconCodePoint'] != null) {
+        icon = IconData(
+          data['iconCodePoint'],
+          fontFamily: data['iconFontFamily'] ?? 'MaterialIcons',
+        );
+      }
+
+      return ChatItem.system(
+        text: data['text'] ?? '',
+        icon: icon,
+        customIcon: data['customIcon'],
+        image: data['image'],
+        isLeader: data['isLeader'] == true,
+      );
+    }
+
+    return ChatItem.message(
+      name: data['name'] ?? 'User',
+      message: data['message'] ?? '',
+      isLeader: data['isLeader'] == true,
+    );
   }
 
   @override
@@ -524,28 +534,63 @@ Future<void> sendMessage() async {
                         color: Colors.white.withOpacity(0.08),
                       ),
                     ),
-                    child: ListView.builder(
-                      itemCount: chatItems.length,
-                      itemBuilder: (context, index) {
-                        final item = chatItems[index];
-
-                        if (item.isSystem) {
-                          return SystemMessage(
-                            text: item.text,
-                            icon: item.icon,
-                            customIcon: item.customIcon,
-                            image: item.image,
-                            isLeader: item.isLeader,
+                    child: StreamBuilder(
+                      stream: roomService.messagesStream(widget.roomId),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                            ),
                           );
                         }
 
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: ChatBubble(
-                            name: item.name,
-                            message: item.message,
-                            isLeader: item.isLeader,
-                          ),
+                        if (snapshot.hasError) {
+                          return Center(
+                            child: Text(
+                              'Error: ${snapshot.error}',
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          );
+                        }
+
+                        final docs = snapshot.data?.docs ?? [];
+
+                        if (docs.isEmpty) {
+                          return const Center(
+                            child: Text(
+                              'No messages yet',
+                              style: TextStyle(color: Colors.white54),
+                            ),
+                          );
+                        }
+
+                        return ListView.builder(
+                          itemCount: docs.length,
+                          itemBuilder: (context, index) {
+                            final data = docs[index].data();
+                            final item = chatItemFromFirestore(data);
+
+                            if (item.isSystem) {
+                              return SystemMessage(
+                                text: item.text,
+                                icon: item.icon,
+                                customIcon: item.customIcon,
+                                image: item.image,
+                                isLeader: item.isLeader,
+                              );
+                            }
+
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 12),
+                              child: ChatBubble(
+                                name: item.name,
+                                message: item.message,
+                                isLeader: item.isLeader,
+                              ),
+                            );
+                          },
                         );
                       },
                     ),
