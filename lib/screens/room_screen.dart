@@ -1,6 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import '../models/room.dart';
+import '../models/room_member_model.dart';
 import '../services/room_service.dart';
 
 class RoomScreen extends StatefulWidget {
@@ -17,21 +20,22 @@ class RoomScreen extends StatefulWidget {
   State<RoomScreen> createState() => _RoomScreenState();
 }
 
-class _RoomScreenState extends State<RoomScreen> {
+class _RoomScreenState extends State<RoomScreen>
+    with SingleTickerProviderStateMixin {
   late final YoutubePlayerController youtubeController;
   final TextEditingController chatController = TextEditingController();
   final ScrollController chatScrollController = ScrollController();
   final RoomService roomService = RoomService();
+  late final AnimationController backgroundController;
 
   bool isMicOn = false;
   bool isRoomOwner = true;
   bool everyoneCanUseMic = false;
   late bool isPrivateRoom;
 
+  final String currentUserId = 'user_mohammed';
   final String currentUserName = 'Mohammed';
-  final String activeSpeakerName = 'Fahad';
-
-  final List<String> kickedUsers = [];
+  final String currentUserImage = 'https://i.pravatar.cc/150?img=11';
 
   List<RoomUser> users = [];
 
@@ -39,6 +43,11 @@ class _RoomScreenState extends State<RoomScreen> {
   void initState() {
     super.initState();
     isPrivateRoom = widget.room.isPrivate;
+
+    backgroundController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 14),
+    )..repeat(reverse: true);
 
     youtubeController = YoutubePlayerController(
       initialVideoId: widget.room.videoId,
@@ -51,6 +60,7 @@ class _RoomScreenState extends State<RoomScreen> {
 
   @override
   void dispose() {
+    backgroundController.dispose();
     youtubeController.dispose();
     chatController.dispose();
     chatScrollController.dispose();
@@ -59,13 +69,16 @@ class _RoomScreenState extends State<RoomScreen> {
 
   RoomUser get currentUser {
     return users.firstWhere(
-      (user) => user.name == currentUserName,
+      (user) => user.userId == currentUserId,
       orElse: () => RoomUser(
+        userId: currentUserId,
         name: currentUserName,
-        image: 'https://i.pravatar.cc/150?img=11',
-        role: 'User',
+        image: currentUserImage,
+        role: 'Owner',
         isSpeaker: false,
-        hasMicPermission: false,
+        hasMicPermission: true,
+        isMicOn: false,
+        isLeader: true,
       ),
     );
   }
@@ -100,24 +113,37 @@ class _RoomScreenState extends State<RoomScreen> {
     }
   }
 
+  void scrollChatToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!chatScrollController.hasClients) return;
+
+      chatScrollController.animateTo(
+        chatScrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
   Future<void> sendMessage() async {
     final text = chatController.text.trim();
-
     if (text.isEmpty) return;
 
     chatController.clear();
 
     await roomService.sendMessage(
       roomId: widget.roomId,
-      userId: 'user_mohammed',
+      userId: currentUserId,
       name: currentUserName,
       image: currentUser.image,
       message: text,
       isLeader: currentUser.isLeader,
     );
+
+    scrollChatToBottom();
   }
 
-  void toggleMic() {
+  Future<void> toggleMic() async {
     if (!hasMicPermission) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('You do not have mic permission')),
@@ -125,9 +151,17 @@ class _RoomScreenState extends State<RoomScreen> {
       return;
     }
 
+    final newMicState = !isMicOn;
+
     setState(() {
-      isMicOn = !isMicOn;
+      isMicOn = newMicState;
     });
+
+    await roomService.updateMicState(
+      roomId: widget.roomId,
+      userId: currentUserId,
+      isMicOn: newMicState,
+    );
   }
 
   void sendInvite() {
@@ -235,32 +269,52 @@ class _RoomScreenState extends State<RoomScreen> {
     );
   }
 
-  void toggleUserMicPermission(RoomUser user) {
-    if (!isRoomOwner) return;
+  Future<void> toggleUserMicPermission(RoomUser user) async {
+    if (!isRoomOwner) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Only the room owner can control mic')),
+      );
+      return;
+    }
+
+    if (user.userId.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('User id is missing')),
+      );
+      return;
+    }
 
     final newPermission = !user.hasMicPermission;
 
-    roomService.updateMicPermission(
-      roomId: widget.roomId,
-      userId: user.userId,
-      hasMicPermission: newPermission,
-    );
+    try {
+      await roomService.updateMicPermission(
+        roomId: widget.roomId,
+        userId: user.userId,
+        hasMicPermission: newPermission,
+      );
 
-    roomService.sendSystemMessage(
-      roomId: widget.roomId,
-      text: newPermission
-          ? '${user.name} got the mic'
-          : 'Mic removed from ${user.name}',
-      userId: user.userId,
-      name: user.name,
-      image: user.image,
-      isLeader: user.isLeader,
-      icon: newPermission ? Icons.mic_rounded : Icons.mic_off_rounded,
-    );
+      await roomService.sendSystemMessage(
+        roomId: widget.roomId,
+        text: newPermission
+            ? '${user.name} got the mic'
+            : 'Mic removed from ${user.name}',
+        userId: user.userId,
+        name: user.name,
+        image: user.image,
+        isLeader: user.isLeader,
+        icon: newPermission ? Icons.mic_rounded : Icons.mic_off_rounded,
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update mic: $e')),
+      );
+    }
   }
 
   void kickUser(RoomUser user) {
-    if (!isRoomOwner) return;
+    if (!isRoomOwner || user.userId == currentUser.userId) return;
 
     roomService.kickUser(
       roomId: widget.roomId,
@@ -318,24 +372,13 @@ class _RoomScreenState extends State<RoomScreen> {
 
                     final docs = snapshot.data?.docs ?? [];
                     final roomUsers = docs
-                        .map((doc) => roomUserFromFirestore(doc.data()))
-                        .toList();
-
-                    final isStillMember = roomUsers.any(
-                      (user) => user.userId == currentUser.userId,
-                    );
-
-                    if (!isStillMember && mounted) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('You were removed from the room'),
+                        .map(
+                          (doc) => roomUserFromFirestore(
+                            doc.data(),
+                            documentId: doc.id,
                           ),
-                        );
-
-                        Navigator.pop(context);
-                      });
-                    }
+                        )
+                        .toList();
 
                     if (roomUsers.isEmpty) {
                       return const Center(
@@ -354,11 +397,11 @@ class _RoomScreenState extends State<RoomScreen> {
                         return RoomUserTile(
                           user: user,
                           isAdmin: isRoomOwner,
+                          currentUserId: currentUser.userId,
                           onToggleMicPermission: () {
                             toggleUserMicPermission(user);
                           },
                           onKick: () {
-                            Navigator.pop(context);
                             kickUser(user);
                           },
                         );
@@ -432,27 +475,38 @@ class _RoomScreenState extends State<RoomScreen> {
     );
   }
 
-  RoomUser roomUserFromFirestore(Map<String, dynamic> data) {
+  bool isMohammedLeaderName(String name) {
+    final normalizedName = name.trim().toLowerCase();
+    return normalizedName == 'mohammed' || normalizedName == 'محمد';
+  }
+
+  RoomUser roomUserFromFirestore(
+    Map<String, dynamic> data, {
+    String documentId = '',
+  }) {
+    final member = RoomMemberModel.fromMap({
+      ...data,
+      if ((data['userId'] ?? '').toString().trim().isEmpty)
+        'userId': documentId,
+    });
+
+    final isLeaderUser =
+        member.isLeader || isMohammedLeaderName(member.name);
+
     return RoomUser(
-      userId: data['userId'] ?? '',
-      name: data['name'] ?? 'User',
-      image: data['image'] ?? 'https://i.pravatar.cc/150',
-      role: data['isLeader'] == true ? 'Owner' : 'Listener',
-      isSpeaker: data['hasMicPermission'] == true,
-      hasMicPermission: data['hasMicPermission'] == true,
-      isLeader: data['isLeader'] == true,
+      userId: member.userId,
+      name: member.name.isEmpty ? 'User' : member.name,
+      image: member.image.isEmpty ? 'https://i.pravatar.cc/150' : member.image,
+      role: isLeaderUser ? 'Owner' : 'Listener',
+      isSpeaker: member.isMicOn,
+      hasMicPermission: member.hasMicPermission || isLeaderUser,
+      isMicOn: member.isMicOn,
+      isLeader: isLeaderUser,
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final activeSpeaker = users.isNotEmpty
-        ? users.firstWhere(
-            (user) => user.name == activeSpeakerName,
-            orElse: () => users.first,
-          )
-        : currentUser;
-
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
@@ -463,22 +517,36 @@ class _RoomScreenState extends State<RoomScreen> {
             final docs = membersSnapshot.data?.docs ?? [];
 
             users = docs
-                .map((doc) => roomUserFromFirestore(doc.data()))
+                .map(
+                  (doc) => roomUserFromFirestore(
+                    doc.data(),
+                    documentId: doc.id,
+                  ),
+                )
                 .toList();
 
-            return Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Color(0xFF20114F),
-                    Color(0xFF4B245B),
-                    Color(0xFF102C6B),
-                    Color(0xFF5A372D),
-                  ],
-                ),
-              ),
+            final isStillMember = users.any(
+              (user) => user.userId == currentUser.userId,
+            );
+
+            if (!isStillMember && users.isNotEmpty && mounted) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('You were removed from the room'),
+                  ),
+                );
+
+                Navigator.pop(context);
+              });
+            }
+
+            final activeSpeaker = users.where((user) => user.isMicOn).isNotEmpty
+                ? users.firstWhere((user) => user.isMicOn)
+                : null;
+
+            return AnimatedWaveRoomBackground(
+              controller: backgroundController,
               child: SafeArea(
                 child: Column(
                   children: [
@@ -504,13 +572,15 @@ class _RoomScreenState extends State<RoomScreen> {
                             ),
                           ),
                           const Spacer(),
-                          SpeakerAvatar(
-                            user: activeSpeaker,
-                            radius: 26,
-                            isSpeaking:
-                                isMicOn && activeSpeaker.name == currentUserName,
-                            showName: false,
-                          ),
+                          if (activeSpeaker != null)
+                            SpeakerAvatar(
+                              user: activeSpeaker,
+                              radius: 22,
+                              isSpeaking: true,
+                              showName: false,
+                            )
+                          else
+                            const SizedBox(width: 44),
                           const Spacer(),
                           IconButton(
                             onPressed: () {},
@@ -563,74 +633,11 @@ class _RoomScreenState extends State<RoomScreen> {
                             color: Colors.white.withOpacity(0.08),
                           ),
                         ),
-                        child: StreamBuilder(
-                          stream: roomService.messagesStream(widget.roomId),
-                          builder: (context, snapshot) {
-                            if (snapshot.connectionState ==
-                                ConnectionState.waiting) {
-                              return const Center(
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                ),
-                              );
-                            }
-
-                            if (snapshot.hasError) {
-                              return Center(
-                                child: Text(
-                                  'Error: ${snapshot.error}',
-                                  style: const TextStyle(color: Colors.white),
-                                ),
-                              );
-                            }
-
-                            final docs = snapshot.data?.docs ?? [];
-
-                            WidgetsBinding.instance.addPostFrameCallback((_) {
-                              if (chatScrollController.hasClients) {
-                                chatScrollController.jumpTo(
-                                  chatScrollController.position.maxScrollExtent,
-                                );
-                              }
-                            });
-
-                            if (docs.isEmpty) {
-                              return const Center(
-                                child: Text(
-                                  'No messages yet',
-                                  style: TextStyle(color: Colors.white54),
-                                ),
-                              );
-                            }
-
-                            return ListView.builder(
-                              controller: chatScrollController,
-                              itemCount: docs.length,
-                              itemBuilder: (context, index) {
-                                final data = docs[index].data();
-                                final item = chatItemFromFirestore(data);
-
-                                if (item.isSystem) {
-                                  return SystemMessage(
-                                    text: item.text,
-                                    icon: item.icon,
-                                    customIcon: item.customIcon,
-                                    image: item.image,
-                                    isLeader: item.isLeader,
-                                  );
-                                }
-
-                                return Padding(
-                                  padding: const EdgeInsets.only(bottom: 12),
-                                  child: ChatBubble(
-                                    name: item.name,
-                                    message: item.message,
-                                    isLeader: item.isLeader,
-                                  ),
-                                );
-                              },
-                            );
-                          },
+                        child: ChatMessagesList(
+                          key: ValueKey(widget.roomId),
+                          roomId: widget.roomId,
+                          roomService: roomService,
+                          chatScrollController: chatScrollController,
                         ),
                       ),
                     ),
@@ -741,6 +748,162 @@ class _RoomScreenState extends State<RoomScreen> {
   }
 }
 
+
+class ChatMessagesList extends StatefulWidget {
+  const ChatMessagesList({
+    super.key,
+    required this.roomId,
+    required this.roomService,
+    required this.chatScrollController,
+  });
+
+  final String roomId;
+  final RoomService roomService;
+  final ScrollController chatScrollController;
+
+  @override
+  State<ChatMessagesList> createState() => _ChatMessagesListState();
+}
+
+class _ChatMessagesListState extends State<ChatMessagesList>
+    with AutomaticKeepAliveClientMixin {
+  late final Stream messagesStream;
+  int lastMessagesCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    messagesStream = widget.roomService.messagesStream(widget.roomId);
+  }
+
+  @override
+  bool get wantKeepAlive => true;
+
+  bool get isNearBottom {
+    if (!widget.chatScrollController.hasClients) return true;
+
+    final position = widget.chatScrollController.position;
+    return position.maxScrollExtent - position.pixels < 80;
+  }
+
+  void scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!widget.chatScrollController.hasClients) return;
+
+      widget.chatScrollController.animateTo(
+        widget.chatScrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
+  ChatItem chatItemFromFirestore(Map<String, dynamic> data) {
+    final type = data['type'] ?? 'message';
+
+    if (type == 'system') {
+      IconData? icon;
+
+      if (data['iconCodePoint'] != null) {
+        icon = IconData(
+          data['iconCodePoint'],
+          fontFamily: data['iconFontFamily'] ?? 'MaterialIcons',
+        );
+      }
+
+      return ChatItem.system(
+        text: data['text'] ?? '',
+        icon: icon,
+        customIcon: data['customIcon'],
+        image: data['image'],
+        isLeader: data['isLeader'] == true,
+      );
+    }
+
+    return ChatItem.message(
+      name: data['name'] ?? 'User',
+      message: data['message'] ?? '',
+      isLeader: data['isLeader'] == true,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+
+    return StreamBuilder(
+      stream: messagesStream,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            !snapshot.hasData) {
+          return const Center(
+            child: CircularProgressIndicator(
+              color: Colors.white,
+            ),
+          );
+        }
+
+        if (snapshot.hasError) {
+          return Center(
+            child: Text(
+              'Error: ${snapshot.error}',
+              style: const TextStyle(color: Colors.white),
+            ),
+          );
+        }
+
+        final docs = snapshot.data?.docs ?? [];
+
+        final hadMessagesBefore = lastMessagesCount > 0;
+        final hasNewMessage = docs.length > lastMessagesCount;
+        final shouldAutoScroll = hasNewMessage && (!hadMessagesBefore || isNearBottom);
+        lastMessagesCount = docs.length;
+
+        if (shouldAutoScroll) {
+          scrollToBottom();
+        }
+
+        if (docs.isEmpty) {
+          return const Center(
+            child: Text(
+              'No messages yet',
+              style: TextStyle(color: Colors.white54),
+            ),
+          );
+        }
+
+        return ListView.builder(
+          controller: widget.chatScrollController,
+          itemCount: docs.length,
+          itemBuilder: (context, index) {
+            final data = docs[index].data();
+            final item = chatItemFromFirestore(data);
+
+            if (item.isSystem) {
+              return SystemMessage(
+                text: item.text,
+                icon: item.icon,
+                customIcon: item.customIcon,
+                image: item.image,
+                isLeader: item.isLeader,
+              );
+            }
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: ChatBubble(
+                name: item.name,
+                message: item.message,
+                isLeader: item.isLeader,
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
 class ChatItem {
   final bool isSystem;
   final String text;
@@ -800,6 +963,7 @@ class RoomUser {
   final String role;
   final bool isSpeaker;
   final bool isLeader;
+  final bool isMicOn;
   bool hasMicPermission;
 
   RoomUser({
@@ -809,35 +973,9 @@ class RoomUser {
     required this.role,
     required this.isSpeaker,
     required this.hasMicPermission,
+    required this.isMicOn,
     this.isLeader = false,
   });
-}
-
-class CrownBadge extends StatelessWidget {
-  const CrownBadge({
-    super.key,
-    this.size = 28,
-  });
-
-  final double size;
-
-  @override
-  Widget build(BuildContext context) {
-    return Transform.rotate(
-      angle: -0.35,
-      child: Icon(
-        Icons.workspace_premium_rounded,
-        color: Colors.white.withOpacity(0.95),
-        size: size,
-        shadows: [
-          Shadow(
-            color: Colors.black.withOpacity(0.45),
-            blurRadius: 4,
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 class SpeakerAvatar extends StatefulWidget {
@@ -906,6 +1044,9 @@ class _SpeakerAvatarState extends State<SpeakerAvatar>
 
   @override
   Widget build(BuildContext context) {
+    final bool isLeaderUser =
+        widget.user.isLeader || widget.user.role.toLowerCase() == 'owner';
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -914,42 +1055,12 @@ class _SpeakerAvatarState extends State<SpeakerAvatar>
           builder: (context, child) {
             return Transform.scale(
               scale: widget.isSpeaking ? scaleAnimation.value : 1,
-              child: Stack(
-                clipBehavior: Clip.none,
-                alignment: Alignment.center,
-                children: [
-                  Container(
-                    padding: EdgeInsets.all(widget.isSpeaking ? 4 : 2),
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      boxShadow: widget.isSpeaking
-                          ? [
-                              BoxShadow(
-                                color: Colors.white.withOpacity(0.42),
-                                blurRadius: 18,
-                                spreadRadius: 2,
-                              ),
-                            ]
-                          : [],
-                      border: Border.all(
-                        color: widget.isSpeaking
-                            ? Colors.white
-                            : Colors.white.withOpacity(0.28),
-                        width: widget.isSpeaking ? 3 : 1,
-                      ),
-                    ),
-                    child: CircleAvatar(
-                      radius: widget.radius,
-                      backgroundImage: NetworkImage(widget.user.image),
-                    ),
-                  ),
-                  if (widget.user.isLeader)
-                    Positioned(
-                      top: -14,
-                      left: -8,
-                      child: CrownBadge(size: widget.radius * 0.95),
-                    ),
-                ],
+              child: LeaderGoldAvatar(
+                image: widget.user.image,
+                radius: widget.radius,
+                isLeader: isLeaderUser,
+                isSpeaking: widget.isSpeaking,
+                crownSize: widget.radius * 0.62,
               ),
             );
           },
@@ -976,25 +1087,317 @@ class _SpeakerAvatarState extends State<SpeakerAvatar>
   }
 }
 
+
+class LeaderGoldAvatar extends StatelessWidget {
+  const LeaderGoldAvatar({
+    super.key,
+    required this.image,
+    required this.radius,
+    required this.isLeader,
+    this.isSpeaking = false,
+    this.crownSize,
+  });
+
+  final String image;
+  final double radius;
+  final bool isLeader;
+  final bool isSpeaking;
+  final double? crownSize;
+
+  @override
+  Widget build(BuildContext context) {
+    final double effectiveCrownSize = crownSize ?? radius * 0.82;
+
+    return Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.center,
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: isSpeaking
+                  ? Colors.white
+                  : Colors.white.withOpacity(0.20),
+              width: isSpeaking ? 2.2 : 1,
+            ),
+            boxShadow: isSpeaking
+                ? [
+                    BoxShadow(
+                      color: Colors.white.withOpacity(0.34),
+                      blurRadius: 14,
+                      spreadRadius: 1.4,
+                    ),
+                  ]
+                : [],
+          ),
+          child: CircleAvatar(
+            radius: radius,
+            backgroundImage: NetworkImage(image),
+          ),
+        ),
+
+
+        // تاج VIP أفخم، ثابت فوق الإطار ومربوط فيه.
+        if (isLeader)
+          Positioned(
+            top: -(effectiveCrownSize * 1.04),
+            child: CustomPaint(
+              size: Size(effectiveCrownSize * 1.85, effectiveCrownSize * 1.08),
+              painter: PremiumGoldCrownPainter(),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class PremiumGoldCrownPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Path crown = Path()
+      ..moveTo(size.width * 0.07, size.height * 0.76)
+      ..lineTo(size.width * 0.14, size.height * 0.26)
+      ..lineTo(size.width * 0.31, size.height * 0.54)
+      ..lineTo(size.width * 0.42, size.height * 0.13)
+      ..lineTo(size.width * 0.50, size.height * 0.48)
+      ..lineTo(size.width * 0.58, size.height * 0.13)
+      ..lineTo(size.width * 0.69, size.height * 0.54)
+      ..lineTo(size.width * 0.86, size.height * 0.26)
+      ..lineTo(size.width * 0.93, size.height * 0.76)
+      ..quadraticBezierTo(
+        size.width * 0.50,
+        size.height * 0.94,
+        size.width * 0.07,
+        size.height * 0.76,
+      )
+      ..close();
+
+    final Paint shadow = Paint()
+      ..color = Colors.black.withOpacity(0.38)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+    canvas.drawPath(crown.shift(const Offset(0, 2.5)), shadow);
+
+    final Paint gold = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          Color(0xFFFFFBE0),
+          Color(0xFFFFE082),
+          Color(0xFFFFB300),
+          Color(0xFFFF8F00),
+        ],
+        stops: [0.0, 0.35, 0.72, 1.0],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+    canvas.drawPath(crown, gold);
+
+    final Paint darkEdge = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4
+      ..color = Colors.black.withOpacity(0.45);
+    canvas.drawPath(crown, darkEdge);
+
+    final Paint highlight = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.9
+      ..color = Colors.white.withOpacity(0.62);
+    canvas.drawPath(crown.shift(const Offset(0, -0.8)), highlight);
+
+    final Paint baseLine = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round
+      ..shader = const LinearGradient(
+        colors: [
+          Color(0xFFFFF8C6),
+          Color(0xFFFFB300),
+          Color(0xFFFFF8C6),
+        ],
+      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
+
+    final Path base = Path()
+      ..moveTo(size.width * 0.16, size.height * 0.75)
+      ..quadraticBezierTo(
+        size.width * 0.50,
+        size.height * 0.84,
+        size.width * 0.84,
+        size.height * 0.75,
+      );
+    canvas.drawPath(base, baseLine);
+
+    void drawGem(double x, double y, double r, Color color) {
+      final Paint gemShadow = Paint()
+        ..color = Colors.black.withOpacity(0.24)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
+      canvas.drawCircle(Offset(size.width * x, size.height * y + 1), r, gemShadow);
+
+      final Paint gem = Paint()
+        ..shader = RadialGradient(
+          colors: [
+            Colors.white.withOpacity(0.95),
+            color,
+          ],
+        ).createShader(
+          Rect.fromCircle(
+            center: Offset(size.width * x, size.height * y),
+            radius: r,
+          ),
+        );
+      canvas.drawCircle(Offset(size.width * x, size.height * y), r, gem);
+    }
+
+    drawGem(0.50, 0.43, size.width * 0.047, const Color(0xFFFFF176));
+    drawGem(0.22, 0.53, size.width * 0.032, const Color(0xFFFFE082));
+    drawGem(0.78, 0.53, size.width * 0.032, const Color(0xFFFFE082));
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class AnimatedWaveRoomBackground extends StatelessWidget {
+  const AnimatedWaveRoomBackground({
+    super.key,
+    required this.controller,
+    required this.child,
+  });
+
+  final AnimationController controller;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        return CustomPaint(
+          painter: RoomWaveBackgroundPainter(controller.value),
+          child: child,
+        );
+      },
+    );
+  }
+}
+
+class RoomWaveBackgroundPainter extends CustomPainter {
+  RoomWaveBackgroundPainter(this.value);
+
+  final double value;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+
+    final basePaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          Color(0xFF170D3F),
+          Color(0xFF2B174D),
+          Color(0xFF102C6B),
+          Color(0xFF4B245B),
+        ],
+      ).createShader(rect);
+
+    canvas.drawRect(rect, basePaint);
+
+    _drawWave(
+      canvas,
+      size,
+      phase: value * math.pi * 2,
+      baseY: size.height * 0.30,
+      amplitude: 24,
+      color: const Color(0xFF7B3FE4).withOpacity(0.20),
+      height: size.height * 0.34,
+    );
+
+    _drawWave(
+      canvas,
+      size,
+      phase: value * math.pi * 2 + 1.7,
+      baseY: size.height * 0.56,
+      amplitude: 30,
+      color: const Color(0xFF1E88E5).withOpacity(0.16),
+      height: size.height * 0.34,
+    );
+
+    _drawWave(
+      canvas,
+      size,
+      phase: value * math.pi * 2 + 3.0,
+      baseY: size.height * 0.76,
+      amplitude: 22,
+      color: const Color(0xFFFFA000).withOpacity(0.10),
+      height: size.height * 0.28,
+    );
+  }
+
+  void _drawWave(
+    Canvas canvas,
+    Size size, {
+    required double phase,
+    required double baseY,
+    required double amplitude,
+    required Color color,
+    required double height,
+  }) {
+    final path = Path()..moveTo(0, baseY);
+
+    for (double x = 0; x <= size.width; x += 8) {
+      final y = baseY +
+          math.sin((x / size.width * math.pi * 2) + phase) * amplitude +
+          math.sin((x / size.width * math.pi * 4) + phase * 0.55) *
+              (amplitude * 0.28);
+      path.lineTo(x, y);
+    }
+
+    path
+      ..lineTo(size.width, baseY + height)
+      ..lineTo(0, baseY + height)
+      ..close();
+
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
+
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant RoomWaveBackgroundPainter oldDelegate) {
+    return oldDelegate.value != value;
+  }
+}
+
 class RoomUserTile extends StatelessWidget {
   const RoomUserTile({
     super.key,
     required this.user,
     required this.isAdmin,
+    required this.currentUserId,
     required this.onToggleMicPermission,
     required this.onKick,
   });
 
   final RoomUser user;
   final bool isAdmin;
+  final String currentUserId;
   final VoidCallback onToggleMicPermission;
   final VoidCallback onKick;
 
   @override
   Widget build(BuildContext context) {
+    final isLeaderUser = user.isLeader || user.role.toLowerCase() == 'owner';
+    final canManageUser =
+        isAdmin && user.userId.trim().isNotEmpty && user.userId != currentUserId;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.fromLTRB(12, 20, 12, 12),
+      clipBehavior: Clip.none,
       decoration: BoxDecoration(
         color: Colors.white.withOpacity(0.05),
         borderRadius: BorderRadius.circular(18),
@@ -1004,21 +1407,10 @@ class RoomUserTile extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.center,
-            children: [
-              CircleAvatar(
-                radius: 26,
-                backgroundImage: NetworkImage(user.image),
-              ),
-              if (user.isLeader)
-                const Positioned(
-                  top: -15,
-                  left: -8,
-                  child: CrownBadge(size: 25),
-                ),
-            ],
+          LeaderGoldAvatar(
+            image: user.image,
+            radius: 26,
+            isLeader: isLeaderUser,
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -1031,14 +1423,14 @@ class RoomUserTile extends StatelessWidget {
               ),
             ),
           ),
-          if (isAdmin) ...[
+          if (canManageUser) ...[
             IconButton(
               onPressed: onToggleMicPermission,
               icon: Icon(
                 user.hasMicPermission
-                    ? Icons.mic_none_rounded
+                    ? Icons.mic_rounded
                     : Icons.mic_off_rounded,
-                color: user.hasMicPermission ? Colors.white : Colors.redAccent,
+                color: user.hasMicPermission ? Colors.greenAccent : Colors.redAccent,
                 size: 24,
               ),
             ),
@@ -1095,21 +1487,10 @@ class SystemMessage extends StatelessWidget {
       child: Row(
         children: [
           if (image != null) ...[
-            Stack(
-              clipBehavior: Clip.none,
-              alignment: Alignment.center,
-              children: [
-                CircleAvatar(
-                  radius: 11,
-                  backgroundImage: NetworkImage(image!),
-                ),
-                if (isLeader)
-                  const Positioned(
-                    top: -11,
-                    left: -7,
-                    child: CrownBadge(size: 17),
-                  ),
-              ],
+            LeaderGoldAvatar(
+              image: image!,
+              radius: 11,
+              isLeader: isLeader,
             ),
             const SizedBox(width: 10),
           ],
@@ -1173,14 +1554,6 @@ class ChatBubble extends StatelessWidget {
                 fontWeight: FontWeight.bold,
               ),
             ),
-            if (isLeader)
-              const WidgetSpan(
-                alignment: PlaceholderAlignment.middle,
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 4),
-                  child: CrownBadge(size: 15),
-                ),
-              ),
             const TextSpan(
               text: ': ',
               style: TextStyle(color: Colors.white),

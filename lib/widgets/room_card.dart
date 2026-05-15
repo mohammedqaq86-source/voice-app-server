@@ -22,14 +22,9 @@ class _RoomCardState extends State<RoomCard> {
 
   bool isLoading = false;
 
- final String currentUserId =
-    DateTime.now().millisecondsSinceEpoch.toString();
-
-final String currentUserName =
-    'User ${DateTime.now().millisecondsSinceEpoch % 1000}';
-
-final String currentUserImage =
-    'https://i.pravatar.cc/150?u=${DateTime.now().millisecondsSinceEpoch}';
+  final String currentUserId = 'user_mohammed';
+  final String currentUserName = 'Mohammed';
+  final String currentUserImage = 'https://i.pravatar.cc/150?img=11';
 
   Future<void> enterRoom() async {
     if (isLoading) return;
@@ -38,50 +33,56 @@ final String currentUserImage =
       isLoading = true;
     });
 
-    final canEnter = await roomService.canUserEnterRoom(
-      roomId: widget.roomId,
-      userId: currentUserId,
-    );
+    try {
+      final canEnter = await roomService.canUserEnterRoom(
+        roomId: widget.roomId,
+        userId: currentUserId,
+      );
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    if (!canEnter) {
-      setState(() {
-        isLoading = false;
-      });
+      if (!canEnter) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('You cannot enter this room'),
+          ),
+        );
+        return;
+      }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('You cannot enter this room'),
+      await roomService.joinRoom(
+        roomId: widget.roomId,
+        userId: currentUserId,
+        name: currentUserName,
+        image: currentUserImage,
+        isLeader: false,
+        hasMicPermission: false,
+      );
+
+      if (!mounted) return;
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => RoomScreen(
+            room: widget.room,
+            roomId: widget.roomId,
+          ),
         ),
       );
-      return;
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to enter room: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+        });
+      }
     }
-
-    await roomService.joinRoom(
-      roomId: widget.roomId,
-      userId: currentUserId,
-      name: currentUserName,
-      image: currentUserImage,
-      isLeader: false,
-      hasMicPermission: false,
-    );
-
-    if (!mounted) return;
-
-    setState(() {
-      isLoading = false;
-    });
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => RoomScreen(
-          room: widget.room,
-          roomId: widget.roomId,
-        ),
-      ),
-    );
   }
 
   @override

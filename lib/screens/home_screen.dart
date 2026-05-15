@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import '../models/room.dart';
 import '../services/room_service.dart';
@@ -14,12 +16,30 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
   final RoomService roomService = RoomService();
+  late final AnimationController backgroundController;
 
   final String currentUserId = 'user_mohammed';
   final String currentUserName = 'Mohammed';
   final String currentUserImage = 'https://i.pravatar.cc/150?img=11';
+
+  @override
+  void initState() {
+    super.initState();
+
+    backgroundController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 14),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    backgroundController.dispose();
+    super.dispose();
+  }
 
   Future<void> openSourcePicker() async {
     final video = await Navigator.push<YoutubeVideo>(
@@ -76,6 +96,13 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<bool> canShowRoom(String roomId) async {
+    return roomService.canUserEnterRoom(
+      roomId: roomId,
+      userId: currentUserId,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Directionality(
@@ -88,19 +115,8 @@ class _HomeScreenState extends State<HomeScreen> {
           onPressed: openSourcePicker,
           child: const Icon(Icons.add, size: 32),
         ),
-        body: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xFF20114F),
-                Color(0xFF4B245B),
-                Color(0xFF102C6B),
-                Color(0xFF5A372D),
-              ],
-            ),
-          ),
+        body: AnimatedWaveHomeBackground(
+          controller: backgroundController,
           child: SafeArea(
             child: Column(
               children: [
@@ -148,12 +164,30 @@ class _HomeScreenState extends State<HomeScreen> {
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
                         itemCount: docs.length,
                         itemBuilder: (context, index) {
+                          final roomId = docs[index].id;
                           final data = docs[index].data();
                           final room = roomFromFirestore(data);
 
-                          return RoomCard(
-                            room: room,
-                            roomId: docs[index].id,
+                          return FutureBuilder<bool>(
+                            future: canShowRoom(roomId),
+                            builder: (context, permissionSnapshot) {
+                              if (permissionSnapshot.connectionState ==
+                                  ConnectionState.waiting) {
+                                return const SizedBox.shrink();
+                              }
+
+                              final canShow =
+                                  permissionSnapshot.data ?? false;
+
+                              if (!canShow) {
+                                return const SizedBox.shrink();
+                              }
+
+                              return RoomCard(
+                                room: room,
+                                roomId: roomId,
+                              );
+                            },
                           );
                         },
                       );
@@ -166,6 +200,123 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+}
+
+
+class AnimatedWaveHomeBackground extends StatelessWidget {
+  const AnimatedWaveHomeBackground({
+    super.key,
+    required this.controller,
+    required this.child,
+  });
+
+  final AnimationController controller;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        return CustomPaint(
+          painter: HomeWaveBackgroundPainter(controller.value),
+          child: SizedBox.expand(child: child),
+        );
+      },
+    );
+  }
+}
+
+class HomeWaveBackgroundPainter extends CustomPainter {
+  HomeWaveBackgroundPainter(this.value);
+
+  final double value;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+
+    final basePaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          Color(0xFF170D3F),
+          Color(0xFF2B174D),
+          Color(0xFF102C6B),
+          Color(0xFF4B245B),
+        ],
+      ).createShader(rect);
+
+    canvas.drawRect(rect, basePaint);
+
+    _drawWave(
+      canvas,
+      size,
+      phase: value * math.pi * 2,
+      baseY: size.height * 0.26,
+      amplitude: 24,
+      color: const Color(0xFF7B3FE4).withOpacity(0.22),
+      height: size.height * 0.34,
+    );
+
+    _drawWave(
+      canvas,
+      size,
+      phase: value * math.pi * 2 + 1.7,
+      baseY: size.height * 0.52,
+      amplitude: 30,
+      color: const Color(0xFF1E88E5).withOpacity(0.18),
+      height: size.height * 0.34,
+    );
+
+    _drawWave(
+      canvas,
+      size,
+      phase: value * math.pi * 2 + 3.0,
+      baseY: size.height * 0.74,
+      amplitude: 22,
+      color: const Color(0xFFFFA000).withOpacity(0.11),
+      height: size.height * 0.28,
+    );
+  }
+
+  void _drawWave(
+    Canvas canvas,
+    Size size, {
+    required double phase,
+    required double baseY,
+    required double amplitude,
+    required Color color,
+    required double height,
+  }) {
+    final path = Path()..moveTo(0, baseY);
+
+    for (double x = 0; x <= size.width; x += 8) {
+      final y = baseY +
+          math.sin((x / size.width * math.pi * 2) + phase) * amplitude +
+          math.sin((x / size.width * math.pi * 4) + phase * 0.55) *
+              (amplitude * 0.28);
+      path.lineTo(x, y);
+    }
+
+    path
+      ..lineTo(size.width, baseY + height)
+      ..lineTo(0, baseY + height)
+      ..close();
+
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
+
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant HomeWaveBackgroundPainter oldDelegate) {
+    return oldDelegate.value != value;
   }
 }
 
