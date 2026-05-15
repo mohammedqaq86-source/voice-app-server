@@ -22,9 +22,14 @@ class _RoomCardState extends State<RoomCard> {
 
   bool isLoading = false;
 
-  final String currentUserId = 'user_mohammed';
-  final String currentUserName = 'Mohammed';
-  final String currentUserImage = 'https://i.pravatar.cc/150?img=11';
+ final String currentUserId =
+    DateTime.now().millisecondsSinceEpoch.toString();
+
+final String currentUserName =
+    'User ${DateTime.now().millisecondsSinceEpoch % 1000}';
+
+final String currentUserImage =
+    'https://i.pravatar.cc/150?u=${DateTime.now().millisecondsSinceEpoch}';
 
   Future<void> enterRoom() async {
     if (isLoading) return;

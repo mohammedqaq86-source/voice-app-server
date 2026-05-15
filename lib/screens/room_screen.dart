@@ -20,6 +20,7 @@ class RoomScreen extends StatefulWidget {
 class _RoomScreenState extends State<RoomScreen> {
   late final YoutubePlayerController youtubeController;
   final TextEditingController chatController = TextEditingController();
+  final ScrollController chatScrollController = ScrollController();
   final RoomService roomService = RoomService();
 
   bool isMicOn = false;
@@ -32,51 +33,7 @@ class _RoomScreenState extends State<RoomScreen> {
 
   final List<String> kickedUsers = [];
 
-  final List<RoomUser> users = [
-    RoomUser(
-      name: 'Mohammed',
-      image: 'https://i.pravatar.cc/150?img=11',
-      role: 'Owner',
-      isSpeaker: true,
-      hasMicPermission: true,
-      isLeader: true,
-    ),
-    RoomUser(
-      name: 'Fahad',
-      image: 'https://i.pravatar.cc/150?img=12',
-      role: 'Speaker',
-      isSpeaker: true,
-      hasMicPermission: true,
-    ),
-    RoomUser(
-      name: 'Nasser',
-      image: 'https://i.pravatar.cc/150?img=13',
-      role: 'Speaker',
-      isSpeaker: true,
-      hasMicPermission: false,
-    ),
-    RoomUser(
-      name: 'Salman',
-      image: 'https://i.pravatar.cc/150?img=14',
-      role: 'Listener',
-      isSpeaker: false,
-      hasMicPermission: false,
-    ),
-    RoomUser(
-      name: 'Turki',
-      image: 'https://i.pravatar.cc/150?img=15',
-      role: 'Listener',
-      isSpeaker: false,
-      hasMicPermission: false,
-    ),
-    RoomUser(
-      name: 'Abdullah',
-      image: 'https://i.pravatar.cc/150?img=16',
-      role: 'Listener',
-      isSpeaker: false,
-      hasMicPermission: false,
-    ),
-  ];
+  List<RoomUser> users = [];
 
   @override
   void initState() {
@@ -96,13 +53,20 @@ class _RoomScreenState extends State<RoomScreen> {
   void dispose() {
     youtubeController.dispose();
     chatController.dispose();
+    chatScrollController.dispose();
     super.dispose();
   }
 
   RoomUser get currentUser {
     return users.firstWhere(
       (user) => user.name == currentUserName,
-      orElse: () => users.first,
+      orElse: () => RoomUser(
+        name: currentUserName,
+        image: 'https://i.pravatar.cc/150?img=11',
+        role: 'User',
+        isSpeaker: false,
+        hasMicPermission: false,
+      ),
     );
   }
 
@@ -274,43 +238,35 @@ class _RoomScreenState extends State<RoomScreen> {
   void toggleUserMicPermission(RoomUser user) {
     if (!isRoomOwner) return;
 
-    setState(() {
-      user.hasMicPermission = !user.hasMicPermission;
+    final newPermission = !user.hasMicPermission;
 
-      if (!user.hasMicPermission && user.name == currentUserName) {
-        isMicOn = false;
-      }
-    });
+    roomService.updateMicPermission(
+      roomId: widget.roomId,
+      userId: user.userId,
+      hasMicPermission: newPermission,
+    );
 
     roomService.sendSystemMessage(
       roomId: widget.roomId,
-      text: user.hasMicPermission
+      text: newPermission
           ? '${user.name} got the mic'
           : 'Mic removed from ${user.name}',
-      userId: user.name,
+      userId: user.userId,
       name: user.name,
       image: user.image,
       isLeader: user.isLeader,
-      icon: user.hasMicPermission ? Icons.mic_rounded : Icons.mic_off_rounded,
+      icon: newPermission ? Icons.mic_rounded : Icons.mic_off_rounded,
     );
   }
 
   void kickUser(RoomUser user) {
     if (!isRoomOwner) return;
 
-    setState(() {
-      users.remove(user);
-      kickedUsers.add(user.name);
-    });
-
-    roomService.sendSystemMessage(
+    roomService.kickUser(
       roomId: widget.roomId,
-      text: '${user.name} was kicked from the room',
-      userId: user.name,
+      userId: user.userId,
       name: user.name,
       image: user.image,
-      customIcon: '🦵',
-      isLeader: user.isLeader,
     );
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -342,20 +298,70 @@ class _RoomScreenState extends State<RoomScreen> {
               ),
               child: Directionality(
                 textDirection: TextDirection.ltr,
-                child: ListView.builder(
-                  itemCount: users.length,
-                  itemBuilder: (context, index) {
-                    final user = users[index];
+                child: StreamBuilder(
+                  stream: roomService.membersStream(widget.roomId),
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(
+                        child: CircularProgressIndicator(color: Colors.white),
+                      );
+                    }
 
-                    return RoomUserTile(
-                      user: user,
-                      isAdmin: isRoomOwner,
-                      onToggleMicPermission: () {
-                        toggleUserMicPermission(user);
-                      },
-                      onKick: () {
+                    if (snapshot.hasError) {
+                      return Center(
+                        child: Text(
+                          'Error: ${snapshot.error}',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      );
+                    }
+
+                    final docs = snapshot.data?.docs ?? [];
+                    final roomUsers = docs
+                        .map((doc) => roomUserFromFirestore(doc.data()))
+                        .toList();
+
+                    final isStillMember = roomUsers.any(
+                      (user) => user.userId == currentUser.userId,
+                    );
+
+                    if (!isStillMember && mounted) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('You were removed from the room'),
+                          ),
+                        );
+
                         Navigator.pop(context);
-                        kickUser(user);
+                      });
+                    }
+
+                    if (roomUsers.isEmpty) {
+                      return const Center(
+                        child: Text(
+                          'No users',
+                          style: TextStyle(color: Colors.white54),
+                        ),
+                      );
+                    }
+
+                    return ListView.builder(
+                      itemCount: roomUsers.length,
+                      itemBuilder: (context, index) {
+                        final user = roomUsers[index];
+
+                        return RoomUserTile(
+                          user: user,
+                          isAdmin: isRoomOwner,
+                          onToggleMicPermission: () {
+                            toggleUserMicPermission(user);
+                          },
+                          onKick: () {
+                            Navigator.pop(context);
+                            kickUser(user);
+                          },
+                        );
                       },
                     );
                   },
@@ -426,275 +432,309 @@ class _RoomScreenState extends State<RoomScreen> {
     );
   }
 
+  RoomUser roomUserFromFirestore(Map<String, dynamic> data) {
+    return RoomUser(
+      userId: data['userId'] ?? '',
+      name: data['name'] ?? 'User',
+      image: data['image'] ?? 'https://i.pravatar.cc/150',
+      role: data['isLeader'] == true ? 'Owner' : 'Listener',
+      isSpeaker: data['hasMicPermission'] == true,
+      hasMicPermission: data['hasMicPermission'] == true,
+      isLeader: data['isLeader'] == true,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final activeSpeaker = users.firstWhere(
-      (user) => user.name == activeSpeakerName,
-      orElse: () => users.first,
-    );
+    final activeSpeaker = users.isNotEmpty
+        ? users.firstWhere(
+            (user) => user.name == activeSpeakerName,
+            orElse: () => users.first,
+          )
+        : currentUser;
 
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xFF20114F),
-                Color(0xFF4B245B),
-                Color(0xFF102C6B),
-                Color(0xFF5A372D),
-              ],
-            ),
-          ),
-          child: SafeArea(
-            child: Column(
-              children: [
-                Container(
-                  height: 78,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Row(
-                    children: [
-                      IconButton(
-                        onPressed: confirmExitRoom,
-                        icon: const Icon(
-                          Icons.close,
-                          color: Colors.white,
-                          size: 32,
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: openRoomSettings,
-                        icon: const Icon(
-                          Icons.settings,
-                          color: Colors.white,
-                          size: 30,
-                        ),
-                      ),
-                      const Spacer(),
-                      SpeakerAvatar(
-                        user: activeSpeaker,
-                        radius: 26,
-                        isSpeaking:
-                            isMicOn && activeSpeaker.name == currentUserName,
-                        showName: false,
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        onPressed: () {},
-                        icon: const Icon(
-                          Icons.search,
-                          color: Colors.white,
-                          size: 30,
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: showRoomUsers,
-                        icon: const Icon(
-                          Icons.groups_rounded,
-                          color: Colors.white,
-                          size: 32,
-                        ),
-                      ),
-                    ],
-                  ),
+        body: StreamBuilder(
+          stream: roomService.membersStream(widget.roomId),
+          builder: (context, membersSnapshot) {
+            final docs = membersSnapshot.data?.docs ?? [];
+
+            users = docs
+                .map((doc) => roomUserFromFirestore(doc.data()))
+                .toList();
+
+            return Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF20114F),
+                    Color(0xFF4B245B),
+                    Color(0xFF102C6B),
+                    Color(0xFF5A372D),
+                  ],
                 ),
-                Container(
-                  height: 200,
-                  margin: const EdgeInsets.symmetric(horizontal: 14),
-                  width: double.infinity,
-                  clipBehavior: Clip.antiAlias,
-                  decoration: BoxDecoration(
-                    color: Colors.black,
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: YoutubePlayer(
-                    controller: youtubeController,
-                    showVideoProgressIndicator: true,
-                    progressIndicatorColor: Colors.red,
-                    progressColors: const ProgressBarColors(
-                      playedColor: Colors.red,
-                      handleColor: Colors.redAccent,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Expanded(
-                  child: Container(
-                    width: double.infinity,
-                    margin: const EdgeInsets.symmetric(horizontal: 14),
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.22),
-                      borderRadius: BorderRadius.circular(24),
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.08),
-                      ),
-                    ),
-                    child: StreamBuilder(
-                      stream: roomService.messagesStream(widget.roomId),
-                      builder: (context, snapshot) {
-                        if (snapshot.connectionState ==
-                            ConnectionState.waiting) {
-                          return const Center(
-                            child: CircularProgressIndicator(
+              ),
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    Container(
+                      height: 78,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            onPressed: confirmExitRoom,
+                            icon: const Icon(
+                              Icons.close,
                               color: Colors.white,
+                              size: 32,
                             ),
-                          );
-                        }
-
-                        if (snapshot.hasError) {
-                          return Center(
-                            child: Text(
-                              'Error: ${snapshot.error}',
-                              style: const TextStyle(color: Colors.white),
+                          ),
+                          IconButton(
+                            onPressed: openRoomSettings,
+                            icon: const Icon(
+                              Icons.settings,
+                              color: Colors.white,
+                              size: 30,
                             ),
-                          );
-                        }
-
-                        final docs = snapshot.data?.docs ?? [];
-
-                        if (docs.isEmpty) {
-                          return const Center(
-                            child: Text(
-                              'No messages yet',
-                              style: TextStyle(color: Colors.white54),
+                          ),
+                          const Spacer(),
+                          SpeakerAvatar(
+                            user: activeSpeaker,
+                            radius: 26,
+                            isSpeaking:
+                                isMicOn && activeSpeaker.name == currentUserName,
+                            showName: false,
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            onPressed: () {},
+                            icon: const Icon(
+                              Icons.search,
+                              color: Colors.white,
+                              size: 30,
                             ),
-                          );
-                        }
-
-                        return ListView.builder(
-                          itemCount: docs.length,
-                          itemBuilder: (context, index) {
-                            final data = docs[index].data();
-                            final item = chatItemFromFirestore(data);
-
-                            if (item.isSystem) {
-                              return SystemMessage(
-                                text: item.text,
-                                icon: item.icon,
-                                customIcon: item.customIcon,
-                                image: item.image,
-                                isLeader: item.isLeader,
+                          ),
+                          IconButton(
+                            onPressed: showRoomUsers,
+                            icon: const Icon(
+                              Icons.groups_rounded,
+                              color: Colors.white,
+                              size: 32,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      height: 200,
+                      margin: const EdgeInsets.symmetric(horizontal: 14),
+                      width: double.infinity,
+                      clipBehavior: Clip.antiAlias,
+                      decoration: BoxDecoration(
+                        color: Colors.black,
+                        borderRadius: BorderRadius.circular(24),
+                      ),
+                      child: YoutubePlayer(
+                        controller: youtubeController,
+                        showVideoProgressIndicator: true,
+                        progressIndicatorColor: Colors.red,
+                        progressColors: const ProgressBarColors(
+                          playedColor: Colors.red,
+                          handleColor: Colors.redAccent,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.symmetric(horizontal: 14),
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.22),
+                          borderRadius: BorderRadius.circular(24),
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.08),
+                          ),
+                        ),
+                        child: StreamBuilder(
+                          stream: roomService.messagesStream(widget.roomId),
+                          builder: (context, snapshot) {
+                            if (snapshot.connectionState ==
+                                ConnectionState.waiting) {
+                              return const Center(
+                                child: CircularProgressIndicator(
+                                  color: Colors.white,
+                                ),
                               );
                             }
 
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 12),
-                              child: ChatBubble(
-                                name: item.name,
-                                message: item.message,
-                                isLeader: item.isLeader,
-                              ),
+                            if (snapshot.hasError) {
+                              return Center(
+                                child: Text(
+                                  'Error: ${snapshot.error}',
+                                  style: const TextStyle(color: Colors.white),
+                                ),
+                              );
+                            }
+
+                            final docs = snapshot.data?.docs ?? [];
+
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (chatScrollController.hasClients) {
+                                chatScrollController.jumpTo(
+                                  chatScrollController.position.maxScrollExtent,
+                                );
+                              }
+                            });
+
+                            if (docs.isEmpty) {
+                              return const Center(
+                                child: Text(
+                                  'No messages yet',
+                                  style: TextStyle(color: Colors.white54),
+                                ),
+                              );
+                            }
+
+                            return ListView.builder(
+                              controller: chatScrollController,
+                              itemCount: docs.length,
+                              itemBuilder: (context, index) {
+                                final data = docs[index].data();
+                                final item = chatItemFromFirestore(data);
+
+                                if (item.isSystem) {
+                                  return SystemMessage(
+                                    text: item.text,
+                                    icon: item.icon,
+                                    customIcon: item.customIcon,
+                                    image: item.image,
+                                    isLeader: item.isLeader,
+                                  );
+                                }
+
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: ChatBubble(
+                                    name: item.name,
+                                    message: item.message,
+                                    isLeader: item.isLeader,
+                                  ),
+                                );
+                              },
                             );
                           },
-                        );
-                      },
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 14),
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.28),
-                    borderRadius: BorderRadius.circular(26),
-                  ),
-                  child: Row(
-                    children: [
-                      GestureDetector(
-                        onTap: toggleMic,
-                        child: Container(
-                          width: 76,
-                          height: 76,
-                          decoration: BoxDecoration(
-                            color: micBackgroundColor(),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            micIcon(),
-                            size: 38,
-                            color: micIconColor(),
-                          ),
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: TextField(
-                          controller: chatController,
-                          onSubmitted: (_) => sendMessage(),
-                          style: const TextStyle(color: Colors.white),
-                          decoration: InputDecoration(
-                            hintText: 'Chat',
-                            hintStyle: const TextStyle(
-                              color: Colors.white54,
-                              fontSize: 17,
-                            ),
-                            filled: true,
-                            fillColor: Colors.white.withOpacity(0.12),
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 14,
-                            ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(22),
-                              borderSide: BorderSide.none,
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 14),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.28),
+                        borderRadius: BorderRadius.circular(26),
+                      ),
+                      child: Row(
+                        children: [
+                          GestureDetector(
+                            onTap: toggleMic,
+                            child: Container(
+                              width: 76,
+                              height: 76,
+                              decoration: BoxDecoration(
+                                color: micBackgroundColor(),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                micIcon(),
+                                size: 38,
+                                color: micIconColor(),
+                              ),
                             ),
                           ),
-                        ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextField(
+                              controller: chatController,
+                              onSubmitted: (_) => sendMessage(),
+                              style: const TextStyle(color: Colors.white),
+                              decoration: InputDecoration(
+                                hintText: 'Chat',
+                                hintStyle: const TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 17,
+                                ),
+                                filled: true,
+                                fillColor: Colors.white.withOpacity(0.12),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 14,
+                                ),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(22),
+                                  borderSide: BorderSide.none,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            onPressed: sendMessage,
+                            icon: const Icon(
+                              Icons.send_rounded,
+                              color: Colors.white,
+                              size: 27,
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: sendInvite,
+                            icon: const Icon(
+                              Icons.person_add_alt_1_rounded,
+                              color: Colors.white,
+                              size: 28,
+                            ),
+                          ),
+                          const Icon(
+                            Icons.image,
+                            color: Colors.white,
+                            size: 27,
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        onPressed: sendMessage,
-                        icon: const Icon(
-                          Icons.send_rounded,
-                          color: Colors.white,
-                          size: 27,
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: sendInvite,
-                        icon: const Icon(
-                          Icons.person_add_alt_1_rounded,
-                          color: Colors.white,
-                          size: 28,
-                        ),
-                      ),
-                      const Icon(
-                        Icons.image,
-                        color: Colors.white,
-                        size: 27,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 10),
-                Container(
-                  height: 72,
-                  width: double.infinity,
-                  color: Colors.black.withOpacity(0.22),
-                  alignment: Alignment.center,
-                  child: Container(
-                    height: 52,
-                    margin: const EdgeInsets.symmetric(horizontal: 18),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.92),
-                      borderRadius: BorderRadius.circular(12),
                     ),
-                    alignment: Alignment.center,
-                    child: const Text(
-                      'Ad Space',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+                    const SizedBox(height: 10),
+                    Container(
+                      height: 72,
+                      width: double.infinity,
+                      color: Colors.black.withOpacity(0.22),
+                      alignment: Alignment.center,
+                      child: Container(
+                        height: 52,
+                        margin: const EdgeInsets.symmetric(horizontal: 18),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.92),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        alignment: Alignment.center,
+                        child: const Text(
+                          'Ad Space',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -754,6 +794,7 @@ class ChatItem {
 }
 
 class RoomUser {
+  final String userId;
   final String name;
   final String image;
   final String role;
@@ -762,6 +803,7 @@ class RoomUser {
   bool hasMicPermission;
 
   RoomUser({
+    this.userId = '',
     required this.name,
     required this.image,
     required this.role,
