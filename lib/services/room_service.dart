@@ -406,6 +406,9 @@ class RoomService {
     required String image,
     required String message,
     bool isLeader = false,
+    String? replyToName,
+    String? replyToMessage,
+    List<String> mentions = const [],
   }) async {
     await _firestore
         .collection('rooms')
@@ -418,6 +421,9 @@ class RoomService {
       'image': image,
       'message': message,
       'isLeader': isLeader,
+      'replyToName': replyToName,
+      'replyToMessage': replyToMessage,
+      'mentions': mentions,
       'createdAt': FieldValue.serverTimestamp(),
     });
   }

@@ -6,6 +6,16 @@ import '../models/room.dart';
 import '../models/room_member_model.dart';
 import '../services/room_service.dart';
 
+class ReplyTarget {
+  final String name;
+  final String message;
+
+  const ReplyTarget({
+    required this.name,
+    required this.message,
+  });
+}
+
 class RoomScreen extends StatefulWidget {
   const RoomScreen({
     super.key,
@@ -38,6 +48,7 @@ class _RoomScreenState extends State<RoomScreen>
   final String currentUserImage = 'https://i.pravatar.cc/150?img=11';
 
   List<RoomUser> users = [];
+  ReplyTarget? replyTarget;
 
   @override
   void initState() {
@@ -144,7 +155,19 @@ void dispose() {
     final text = chatController.text.trim();
     if (text.isEmpty) return;
 
+    final mentions = RegExp(r'@([\w\u0600-\u06FF]+)')
+        .allMatches(text)
+        .map((match) => match.group(1) ?? '')
+        .where((name) => name.isNotEmpty)
+        .toList();
+
+    final currentReply = replyTarget;
+
     chatController.clear();
+
+    setState(() {
+      replyTarget = null;
+    });
 
     await roomService.sendMessage(
       roomId: widget.roomId,
@@ -153,6 +176,74 @@ void dispose() {
       image: currentUser.image,
       message: text,
       isLeader: currentUser.isLeader,
+      replyToName: currentReply?.name,
+      replyToMessage: currentReply?.message,
+      mentions: mentions,
+    );
+  }
+
+  void setReplyTarget(String name, String message) {
+    setState(() {
+      replyTarget = ReplyTarget(
+        name: name,
+        message: message,
+      );
+    });
+  }
+
+  void showMentionUsers() {
+    if (users.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No users in room')),
+      );
+      return;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF17112F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        return Directionality(
+          textDirection: TextDirection.ltr,
+          child: ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: users.length,
+            itemBuilder: (context, index) {
+              final user = users[index];
+
+              return ListTile(
+                leading: CircleAvatar(
+                  backgroundImage: NetworkImage(user.image),
+                ),
+                title: Text(
+                  user.name,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                onTap: () {
+                  final oldText = chatController.text;
+                  final mentionText = '@${user.name} ';
+
+                  chatController.text = oldText.isEmpty
+                      ? mentionText
+                      : '$oldText $mentionText';
+
+                  chatController.selection = TextSelection.fromPosition(
+                    TextPosition(offset: chatController.text.length),
+                  );
+
+                  Navigator.pop(context);
+                },
+              );
+            },
+          ),
+        );
+      },
     );
   }
 
@@ -485,6 +576,9 @@ void dispose() {
       name: data['name'] ?? 'User',
       message: data['message'] ?? '',
       isLeader: data['isLeader'] == true,
+      replyToName: data['replyToName'],
+      replyToMessage: data['replyToMessage'],
+      mentions: List<String>.from(data['mentions'] ?? const []),
     );
   }
 
@@ -651,6 +745,7 @@ void dispose() {
                           roomId: widget.roomId,
                           roomService: roomService,
                           chatScrollController: chatScrollController,
+                          onReply: setReplyTarget,
                         ),
                       ),
                     ),
@@ -662,70 +757,140 @@ void dispose() {
                         color: Colors.black.withOpacity(0.28),
                         borderRadius: BorderRadius.circular(26),
                       ),
-                      child: Row(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          GestureDetector(
-                            onTap: toggleMic,
-                            child: Container(
-                              width: 76,
-                              height: 76,
+                          if (replyTarget != null)
+                            Container(
+                              width: double.infinity,
+                              margin: const EdgeInsets.only(bottom: 10),
+                              padding: const EdgeInsets.all(10),
                               decoration: BoxDecoration(
-                                color: micBackgroundColor(),
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                micIcon(),
-                                size: 38,
-                                color: micIconColor(),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: TextField(
-                              controller: chatController,
-                              onSubmitted: (_) => sendMessage(),
-                              style: const TextStyle(color: Colors.white),
-                              decoration: InputDecoration(
-                                hintText: 'Chat',
-                                hintStyle: const TextStyle(
-                                  color: Colors.white54,
-                                  fontSize: 17,
-                                ),
-                                filled: true,
-                                fillColor: Colors.white.withOpacity(0.12),
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 14,
-                                ),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(22),
-                                  borderSide: BorderSide.none,
+                                color: Colors.white.withOpacity(0.10),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border(
+                                  left: BorderSide(
+                                    color: Colors.white.withOpacity(0.65),
+                                    width: 4,
+                                  ),
                                 ),
                               ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          'Reply to ${replyTarget!.name}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          replyTarget!.message,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  IconButton(
+                                    onPressed: () {
+                                      setState(() {
+                                        replyTarget = null;
+                                      });
+                                    },
+                                    icon: const Icon(
+                                      Icons.close_rounded,
+                                      color: Colors.white70,
+                                      size: 20,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            onPressed: sendMessage,
-                            icon: const Icon(
-                              Icons.send_rounded,
-                              color: Colors.white,
-                              size: 27,
-                            ),
-                          ),
-                          IconButton(
-                            onPressed: sendInvite,
-                            icon: const Icon(
-                              Icons.person_add_alt_1_rounded,
-                              color: Colors.white,
-                              size: 28,
-                            ),
-                          ),
-                          const Icon(
-                            Icons.image,
-                            color: Colors.white,
-                            size: 27,
+                          Row(
+                            children: [
+                              GestureDetector(
+                                onTap: toggleMic,
+                                child: Container(
+                                  width: 76,
+                                  height: 76,
+                                  decoration: BoxDecoration(
+                                    color: micBackgroundColor(),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(
+                                    micIcon(),
+                                    size: 38,
+                                    color: micIconColor(),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              IconButton(
+                                onPressed: showMentionUsers,
+                                icon: const Icon(
+                                  Icons.alternate_email_rounded,
+                                  color: Colors.white,
+                                  size: 27,
+                                ),
+                              ),
+                              Expanded(
+                                child: TextField(
+                                  controller: chatController,
+                                  onSubmitted: (_) => sendMessage(),
+                                  style: const TextStyle(color: Colors.white),
+                                  decoration: InputDecoration(
+                                    hintText: 'Chat',
+                                    hintStyle: const TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 17,
+                                    ),
+                                    filled: true,
+                                    fillColor: Colors.white.withOpacity(0.12),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                      vertical: 14,
+                                    ),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(22),
+                                      borderSide: BorderSide.none,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              IconButton(
+                                onPressed: sendMessage,
+                                icon: const Icon(
+                                  Icons.send_rounded,
+                                  color: Colors.white,
+                                  size: 27,
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: sendInvite,
+                                icon: const Icon(
+                                  Icons.person_add_alt_1_rounded,
+                                  color: Colors.white,
+                                  size: 28,
+                                ),
+                              ),
+                              const Icon(
+                                Icons.image,
+                                color: Colors.white,
+                                size: 27,
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -768,11 +933,13 @@ class ChatMessagesList extends StatefulWidget {
     required this.roomId,
     required this.roomService,
     required this.chatScrollController,
+    required this.onReply,
   });
 
   final String roomId;
   final RoomService roomService;
   final ScrollController chatScrollController;
+  final void Function(String name, String message) onReply;
 
   @override
   State<ChatMessagesList> createState() => _ChatMessagesListState();
@@ -781,6 +948,8 @@ class ChatMessagesList extends StatefulWidget {
 class _ChatMessagesListState extends State<ChatMessagesList>
     with AutomaticKeepAliveClientMixin {
   late final Stream messagesStream;
+  late final DateTime sessionStartedAt;
+
   int lastMessagesCount = 0;
   int unreadMessagesCount = 0;
 
@@ -788,6 +957,7 @@ class _ChatMessagesListState extends State<ChatMessagesList>
   void initState() {
     super.initState();
 
+    sessionStartedAt = DateTime.now();
     messagesStream = widget.roomService.messagesStream(widget.roomId);
 
     widget.chatScrollController.addListener(() {
@@ -809,6 +979,21 @@ class _ChatMessagesListState extends State<ChatMessagesList>
 
     final position = widget.chatScrollController.position;
     return position.maxScrollExtent - position.pixels <= 20;
+  }
+
+  bool isMessageFromCurrentSession(Map<String, dynamic> data) {
+    final createdAt = data['createdAt'];
+
+    if (createdAt == null) {
+      return true;
+    }
+
+    try {
+      final DateTime messageTime = createdAt.toDate();
+      return !messageTime.isBefore(sessionStartedAt);
+    } catch (_) {
+      return true;
+    }
   }
 
   void scrollToBottom() {
@@ -863,6 +1048,9 @@ class _ChatMessagesListState extends State<ChatMessagesList>
       name: data['name'] ?? 'User',
       message: data['message'] ?? '',
       isLeader: data['isLeader'] == true,
+      replyToName: data['replyToName'],
+      replyToMessage: data['replyToMessage'],
+      mentions: List<String>.from(data['mentions'] ?? const []),
     );
   }
 
@@ -891,7 +1079,11 @@ class _ChatMessagesListState extends State<ChatMessagesList>
           );
         }
 
-        final docs = snapshot.data?.docs ?? [];
+        final allDocs = snapshot.data?.docs ?? [];
+        final docs = allDocs.where((doc) {
+          final data = doc.data();
+          return isMessageFromCurrentSession(data);
+        }).toList();
 
         final int previousCount = lastMessagesCount;
         final bool hadMessagesBefore = previousCount > 0;
@@ -911,7 +1103,7 @@ class _ChatMessagesListState extends State<ChatMessagesList>
         if (docs.isEmpty) {
           return const Center(
             child: Text(
-              'No messages yet',
+              'No new messages yet',
               style: TextStyle(color: Colors.white54),
             ),
           );
@@ -938,10 +1130,39 @@ class _ChatMessagesListState extends State<ChatMessagesList>
 
                 return Padding(
                   padding: const EdgeInsets.only(bottom: 12),
-                  child: ChatBubble(
-                    name: item.name,
-                    message: item.message,
-                    isLeader: item.isLeader,
+                  child: Dismissible(
+                    key: ValueKey('${item.name}-${item.message}-$index'),
+                    direction: DismissDirection.startToEnd,
+                    dismissThresholds: const {
+                      DismissDirection.startToEnd: 0.01,
+                    },
+                    movementDuration: const Duration(milliseconds: 80),
+                    resizeDuration: null,
+                    confirmDismiss: (_) async {
+                      widget.onReply(item.name, item.message);
+                      return false;
+                    },
+                    background: Container(
+                      alignment: Alignment.centerLeft,
+                      padding: const EdgeInsets.only(left: 18),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: const Icon(
+                        Icons.reply_rounded,
+                        color: Colors.white,
+                        size: 26,
+                      ),
+                    ),
+                    child: ChatBubble(
+                      name: item.name,
+                      message: item.message,
+                      isLeader: item.isLeader,
+                      replyToName: item.replyToName,
+                      replyToMessage: item.replyToMessage,
+                      mentions: item.mentions,
+                    ),
                   ),
                 );
               },
@@ -1004,6 +1225,9 @@ class ChatItem {
   final bool isLeader;
   final String name;
   final String message;
+  final String? replyToName;
+  final String? replyToMessage;
+  final List<String> mentions;
 
   const ChatItem._({
     required this.isSystem,
@@ -1014,6 +1238,9 @@ class ChatItem {
     this.isLeader = false,
     this.name = '',
     this.message = '',
+    this.replyToName,
+    this.replyToMessage,
+    this.mentions = const [],
   });
 
   factory ChatItem.system({
@@ -1037,12 +1264,18 @@ class ChatItem {
     required String name,
     required String message,
     bool isLeader = false,
+    String? replyToName,
+    String? replyToMessage,
+    List<String> mentions = const [],
   }) {
     return ChatItem._(
       isSystem: false,
       name: name,
       message: message,
       isLeader: isLeader,
+      replyToName: replyToName,
+      replyToMessage: replyToMessage,
+      mentions: mentions,
     );
   }
 }
@@ -1621,41 +1854,137 @@ class ChatBubble extends StatelessWidget {
     required this.name,
     required this.message,
     this.isLeader = false,
+    this.replyToName,
+    this.replyToMessage,
+    this.mentions = const [],
   });
 
   final String name;
   final String message;
   final bool isLeader;
+  final String? replyToName;
+  final String? replyToMessage;
+  final List<String> mentions;
+
+  List<TextSpan> messageSpans() {
+    if (mentions.isEmpty) {
+      return [
+        TextSpan(
+          text: message,
+          style: const TextStyle(color: Colors.white70),
+        ),
+      ];
+    }
+
+    final spans = <TextSpan>[];
+    final mentionSet = mentions.map((name) => '@$name').toSet();
+
+    final parts = message.split(' ');
+
+    for (var i = 0; i < parts.length; i++) {
+      final part = parts[i];
+      final textPart = i == parts.length - 1 ? part : '$part ';
+
+      final cleanPart = part.trim();
+
+      if (mentionSet.contains(cleanPart)) {
+        spans.add(
+          TextSpan(
+            text: textPart,
+            style: const TextStyle(
+              color: Color(0xFF7DD3FC),
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        );
+      } else {
+        spans.add(
+          TextSpan(
+            text: textPart,
+            style: const TextStyle(color: Colors.white70),
+          ),
+        );
+      }
+    }
+
+    return spans;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final hasReply = (replyToName ?? '').trim().isNotEmpty &&
+        (replyToMessage ?? '').trim().isNotEmpty;
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.black.withOpacity(0.25),
         borderRadius: BorderRadius.circular(16),
       ),
-      child: RichText(
-        text: TextSpan(
-          children: [
-            TextSpan(
-              text: '$name ',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (hasReply) ...[
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(9),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border(
+                  left: BorderSide(
+                    color: Colors.white.withOpacity(0.55),
+                    width: 3,
+                  ),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    replyToName!,
+                    style: const TextStyle(
+                      color: Color(0xFF7DD3FC),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    replyToMessage!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white60,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
               ),
             ),
-            const TextSpan(
-              text: ': ',
-              style: TextStyle(color: Colors.white),
-            ),
-            TextSpan(
-              text: message,
-              style: const TextStyle(color: Colors.white70),
-            ),
           ],
-        ),
+          RichText(
+            text: TextSpan(
+              children: [
+                TextSpan(
+                  text: '$name ',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const TextSpan(
+                  text: ': ',
+                  style: TextStyle(color: Colors.white),
+                ),
+                ...messageSpans(),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
 }
+
