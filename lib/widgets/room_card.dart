@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import '../models/room.dart';
 import '../screens/room_screen.dart';
@@ -89,134 +91,161 @@ class _RoomCardState extends State<RoomCard> {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: enterRoom,
-      borderRadius: BorderRadius.circular(26),
+      borderRadius: BorderRadius.circular(24),
       child: Stack(
         children: [
-          Container(
-            height: 126,
-            margin: const EdgeInsets.only(bottom: 14),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(26),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.055),
-                  blurRadius: 16,
-                  offset: const Offset(0, 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+              child: Container(
+                height: 128,
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.08),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.10),
+                      blurRadius: 18,
+                      offset: const Offset(0, 9),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 132,
-                  height: double.infinity,
-                  child: Stack(
-                    fit: StackFit.expand,
+                clipBehavior: Clip.antiAlias,
+                child: Directionality(
+                  textDirection: TextDirection.ltr,
+                  child: Row(
                     children: [
-                      Image.network(widget.room.image, fit: BoxFit.cover),
-                      if (widget.room.hasYoutube)
-                        Positioned(
-                          top: 8,
-                          right: 8,
-                          child: Container(
-                            padding: const EdgeInsets.all(5),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.45),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Icon(
-                              Icons.play_arrow_rounded,
-                              color: Colors.white,
-                              size: 18,
+                      Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(18),
+                          child: SizedBox(
+                            width: 108,
+                            height: 108,
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                Image.network(
+                                  widget.room.image,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) {
+                                    return Container(
+                                      color: const Color(0xFFE9E9E9),
+                                      child: const Icon(
+                                        Icons.image_not_supported_rounded,
+                                        color: Colors.black38,
+                                        size: 34,
+                                      ),
+                                    );
+                                  },
+                                ),
+                                if (widget.room.hasYoutube)
+                                  Center(
+                                    child: Container(
+                                      width: 42,
+                                      height: 42,
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withOpacity(0.42),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: const Icon(
+                                        Icons.play_arrow_rounded,
+                                        color: Colors.white,
+                                        size: 31,
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                           ),
                         ),
+                      ),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 14, 14, 12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                widget.room.title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  height: 1.12,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              const Spacer(),
+                              Row(
+                                children: [
+                                  _AvatarStack(
+                                    count: widget.room.users,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    '+${widget.room.users}',
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withOpacity(0.10),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(
+                                          Icons.mic_rounded,
+                                          size: 15,
+                                          color: Colors.white,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          '${widget.room.speakers}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 14, 14, 10),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.room.title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            height: 1.15,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.people_alt_rounded,
-                              size: 18,
-                              color: Colors.black45,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              '${widget.room.users}',
-                              style: const TextStyle(
-                                color: Colors.black54,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(width: 14),
-                            const Icon(
-                              Icons.mic_rounded,
-                              size: 18,
-                              color: Colors.black45,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              '${widget.room.speakers}',
-                              style: const TextStyle(
-                                color: Colors.black54,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        const Spacer(),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 5,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFE8EBFF),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Text(
-                            widget.room.hasYoutube ? 'YouTube' : 'Voice',
-                            style: const TextStyle(
-                              color: Color(0xFF5865F2),
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
           if (isLoading)
             Positioned.fill(
               child: Container(
-                margin: const EdgeInsets.only(bottom: 14),
+                margin: const EdgeInsets.only(bottom: 16),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.65),
-                  borderRadius: BorderRadius.circular(26),
+                  color: Colors.black.withOpacity(0.20),
+                  borderRadius: BorderRadius.circular(24),
                 ),
                 child: const Center(
                   child: CircularProgressIndicator(),
@@ -224,6 +253,48 @@ class _RoomCardState extends State<RoomCard> {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _AvatarStack extends StatelessWidget {
+  const _AvatarStack({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    const avatarSize = 28.0;
+    const overlap = 18.0;
+    final visibleCount = count <= 0 ? 1 : count.clamp(1, 3);
+
+    return SizedBox(
+      width: avatarSize + ((visibleCount - 1) * overlap),
+      height: avatarSize,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: List.generate(visibleCount, (index) {
+          return Positioned(
+            left: index * overlap,
+            child: Container(
+              width: avatarSize,
+              height: avatarSize,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: Colors.white,
+                  width: 2,
+                ),
+              ),
+              child: CircleAvatar(
+                backgroundImage: NetworkImage(
+                  'https://i.pravatar.cc/150?img=${index + 11}',
+                ),
+              ),
+            ),
+          );
+        }),
       ),
     );
   }

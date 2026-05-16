@@ -122,6 +122,11 @@ class _HomeScreenState extends State<HomeScreen>
               children: [
                 const HomeHeader(),
                 const SearchBox(),
+                InvitedRoomsSection(
+                  roomService: roomService,
+                  currentUserId: currentUserId,
+                  roomFromFirestore: roomFromFirestore,
+                ),
                 Expanded(
                   child: StreamBuilder(
                     stream: roomService.publicOpenRoomsStream(),
@@ -162,10 +167,25 @@ class _HomeScreenState extends State<HomeScreen>
 
                       return ListView.builder(
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
-                        itemCount: docs.length,
+                        itemCount: docs.length + 1,
                         itemBuilder: (context, index) {
-                          final roomId = docs[index].id;
-                          final data = docs[index].data();
+                          if (index == 0) {
+                            return const Padding(
+                              padding: EdgeInsets.fromLTRB(4, 2, 4, 10),
+                              child: Text(
+                                'العام',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            );
+                          }
+
+                          final docIndex = index - 1;
+                          final roomId = docs[docIndex].id;
+                          final data = docs[docIndex].data();
                           final room = roomFromFirestore(data);
 
                           return FutureBuilder<bool>(
@@ -203,6 +223,163 @@ class _HomeScreenState extends State<HomeScreen>
   }
 }
 
+class InvitedRoomsSection extends StatelessWidget {
+  const InvitedRoomsSection({
+    super.key,
+    required this.roomService,
+    required this.currentUserId,
+    required this.roomFromFirestore,
+  });
+
+  final RoomService roomService;
+  final String currentUserId;
+  final Room Function(Map<String, dynamic> data) roomFromFirestore;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder(
+      stream: roomService.myInvitesStream(userId: currentUserId),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: Text(
+              'خطأ في تحميل الدعوات: ${snapshot.error}',
+              style: const TextStyle(color: Colors.white70),
+              textAlign: TextAlign.center,
+            ),
+          );
+        }
+
+        final invites = snapshot.data?.docs ?? [];
+
+        if (invites.isEmpty) {
+          return const SizedBox.shrink();
+        }
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    'المدعوون',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 9,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.16),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.10),
+                      ),
+                    ),
+                    child: Text(
+                      '${invites.length}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              ...invites.map((inviteDoc) {
+                final invite = inviteDoc.data();
+                final roomId = invite['roomId']?.toString() ?? inviteDoc.id;
+
+                return FutureBuilder(
+                  future: roomService.roomDocFuture(roomId: roomId),
+                  builder: (context, roomSnapshot) {
+                    if (roomSnapshot.connectionState ==
+                        ConnectionState.waiting) {
+                      return const SizedBox(
+                        height: 42,
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2,
+                          ),
+                        ),
+                      );
+                    }
+
+                    if (!roomSnapshot.hasData ||
+                        roomSnapshot.data == null ||
+                        roomSnapshot.data!.exists == false) {
+                      return const SizedBox.shrink();
+                    }
+
+                    final roomData = roomSnapshot.data!.data();
+
+                    if (roomData == null || roomData['isOpen'] != true) {
+                      return const SizedBox.shrink();
+                    }
+
+                    final room = roomFromFirestore(roomData);
+
+                    return Dismissible(
+                      key: ValueKey('invite_$roomId'),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        height: 128,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        alignment: Alignment.centerLeft,
+                        decoration: BoxDecoration(
+                          color: Colors.redAccent.withOpacity(0.82),
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                        child: const Icon(
+                          Icons.delete_rounded,
+                          color: Colors.white,
+                          size: 30,
+                        ),
+                      ),
+                      confirmDismiss: (_) async {
+                        await roomService.deleteInviteFromUser(
+                          userId: currentUserId,
+                          roomId: roomId,
+                        );
+
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('تم حذف الدعوة'),
+                            ),
+                          );
+                        }
+
+                        return true;
+                      },
+                      child: RoomCard(
+                        room: room,
+                        roomId: roomId,
+                      ),
+                    );
+                  },
+                );
+              }),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
 
 class AnimatedWaveHomeBackground extends StatelessWidget {
   const AnimatedWaveHomeBackground({
@@ -339,7 +516,7 @@ class HomeHeader extends StatelessWidget {
           ),
           const Spacer(),
           const Text(
-            'الرومات العامة',
+            'الرومات',
             style: TextStyle(
               color: Colors.white,
               fontSize: 25,

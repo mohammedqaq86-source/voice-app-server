@@ -6,30 +6,34 @@ class SearchBox extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+      padding: const EdgeInsets.fromLTRB(18, 8, 18, 16),
       child: Container(
-        height: 56,
+        height: 54,
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(22),
+          borderRadius: BorderRadius.circular(18),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.04),
-              blurRadius: 12,
-              offset: const Offset(0, 6),
+              color: Colors.black.withOpacity(0.08),
+              blurRadius: 18,
+              offset: const Offset(0, 8),
             ),
           ],
         ),
         child: const Row(
           children: [
-            SizedBox(width: 18),
-            Icon(Icons.search, color: Colors.black45, size: 28),
+            SizedBox(width: 16),
+            Icon(
+              Icons.search_rounded,
+              color: Color(0xFF9B9B9B),
+              size: 27,
+            ),
             SizedBox(width: 10),
             Text(
-              'ابحث عن روم أو مستخدم',
+              'Search',
               style: TextStyle(
-                color: Colors.black45,
-                fontSize: 16,
+                color: Color(0xFF9B9B9B),
+                fontSize: 18,
                 fontWeight: FontWeight.w600,
               ),
             ),

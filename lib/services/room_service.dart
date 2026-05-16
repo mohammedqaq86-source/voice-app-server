@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+
 class RoomService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
@@ -16,17 +17,13 @@ class RoomService {
       'title': title,
       'image': image,
       'videoId': videoId,
-
       'ownerId': ownerId,
       'ownerName': ownerName,
       'ownerImage': ownerImage,
-
       'isPrivate': isPrivate,
       'isOpen': true,
-
       'usersCount': 1,
       'speakersCount': 1,
-
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
       'lastOpenedAt': FieldValue.serverTimestamp(),
@@ -41,6 +38,7 @@ class RoomService {
       'hasMicPermission': true,
       'isMicOn': false,
       'joinedAt': FieldValue.serverTimestamp(),
+      'lastSeen': FieldValue.serverTimestamp(),
     });
 
     await sendSystemMessage(
@@ -55,9 +53,7 @@ class RoomService {
     return doc.id;
   }
 
-  Future<void> openRoom({
-    required String roomId,
-  }) async {
+  Future<void> openRoom({required String roomId}) async {
     await _firestore.collection('rooms').doc(roomId).update({
       'isOpen': true,
       'lastOpenedAt': FieldValue.serverTimestamp(),
@@ -65,9 +61,7 @@ class RoomService {
     });
   }
 
-  Future<void> closeRoom({
-    required String roomId,
-  }) async {
+  Future<void> closeRoom({required String roomId}) async {
     await _firestore.collection('rooms').doc(roomId).update({
       'isOpen': false,
       'updatedAt': FieldValue.serverTimestamp(),
@@ -88,13 +82,13 @@ class RoomService {
     });
   }
 
- Stream<QuerySnapshot<Map<String, dynamic>>> publicOpenRoomsStream() {
-  return _firestore
-      .collection('rooms')
-      .where('isOpen', isEqualTo: true)
-      .where('isPrivate', isEqualTo: false)
-      .snapshots();
-}
+  Stream<QuerySnapshot<Map<String, dynamic>>> publicOpenRoomsStream() {
+    return _firestore
+        .collection('rooms')
+        .where('isOpen', isEqualTo: true)
+        .where('isPrivate', isEqualTo: false)
+        .snapshots();
+  }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> myRoomsStream({
     required String ownerId,
@@ -114,8 +108,25 @@ class RoomService {
         .doc(userId)
         .collection('invites')
         .where('isOpen', isEqualTo: true)
-        .orderBy('invitedAt', descending: true)
         .snapshots();
+  }
+
+  Future<DocumentSnapshot<Map<String, dynamic>>> roomDocFuture({
+    required String roomId,
+  }) {
+    return _firestore.collection('rooms').doc(roomId).get();
+  }
+
+  Future<void> deleteInviteFromUser({
+    required String userId,
+    required String roomId,
+  }) async {
+    await _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('invites')
+        .doc(roomId)
+        .delete();
   }
 
   Future<void> inviteUserToRoom({
@@ -218,7 +229,10 @@ class RoomService {
       'hasMicPermission': hasMicPermission,
       'isMicOn': false,
       'joinedAt': FieldValue.serverTimestamp(),
+      'lastSeen': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
+
+    await updateRoomCounts(roomId: roomId);
 
     await sendSystemMessage(
       roomId: roomId,
@@ -239,9 +253,29 @@ class RoomService {
         .doc(roomId)
         .collection('members')
         .doc(userId)
-        .update({
-      'isOnline': false,
-      'isMicOn': false,
+        .delete();
+
+    await updateRoomCounts(roomId: roomId);
+  }
+
+  Future<void> updateRoomCounts({
+    required String roomId,
+  }) async {
+    final membersSnapshot = await _firestore
+        .collection('rooms')
+        .doc(roomId)
+        .collection('members')
+        .get();
+
+    final membersCount = membersSnapshot.docs.length;
+
+    final speakersCount = membersSnapshot.docs.where((doc) {
+      return doc.data()['isMicOn'] == true;
+    }).length;
+
+    await _firestore.collection('rooms').doc(roomId).update({
+      'usersCount': membersCount,
+      'speakersCount': speakersCount,
     });
   }
 
@@ -259,6 +293,8 @@ class RoomService {
       'hasMicPermission': hasMicPermission,
       if (!hasMicPermission) 'isMicOn': false,
     });
+
+    await updateRoomCounts(roomId: roomId);
   }
 
   Future<void> updateMicState({
@@ -274,6 +310,8 @@ class RoomService {
         .update({
       'isMicOn': isMicOn,
     });
+
+    await updateRoomCounts(roomId: roomId);
   }
 
   Future<void> kickUser({
@@ -307,6 +345,8 @@ class RoomService {
     });
 
     await batch.commit();
+
+    await updateRoomCounts(roomId: roomId);
 
     await sendSystemMessage(
       roomId: roomId,

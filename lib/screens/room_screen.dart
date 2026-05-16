@@ -21,7 +21,7 @@ class RoomScreen extends StatefulWidget {
 }
 
 class _RoomScreenState extends State<RoomScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final YoutubePlayerController youtubeController;
   final TextEditingController chatController = TextEditingController();
   final ScrollController chatScrollController = ScrollController();
@@ -42,6 +42,7 @@ class _RoomScreenState extends State<RoomScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     isPrivateRoom = widget.room.isPrivate;
 
     backgroundController = AnimationController(
@@ -59,13 +60,21 @@ class _RoomScreenState extends State<RoomScreen>
   }
 
   @override
-  void dispose() {
-    backgroundController.dispose();
-    youtubeController.dispose();
-    chatController.dispose();
-    chatScrollController.dispose();
-    super.dispose();
-  }
+void dispose() {
+  backgroundController.dispose();
+  youtubeController.dispose();
+  chatController.dispose();
+  chatScrollController.dispose();
+
+  WidgetsBinding.instance.removeObserver(this);
+
+  roomService.leaveRoom(
+    roomId: widget.roomId,
+    userId: currentUserId,
+  );
+
+  super.dispose();
+}
 
   RoomUser get currentUser {
     return users.firstWhere(
@@ -88,30 +97,36 @@ class _RoomScreenState extends State<RoomScreen>
   }
 
   Future<void> confirmExitRoom() async {
-    final shouldExit = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Leave room'),
-          content: const Text('Are you sure you want to leave this room?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('No'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Yes'),
-            ),
-          ],
-        );
-      },
+  final shouldExit = await showDialog<bool>(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        title: const Text('Leave room'),
+        content: const Text('Are you sure you want to leave this room?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('No'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Yes'),
+          ),
+        ],
+      );
+    },
+  );
+
+  if (shouldExit == true && mounted) {
+    await roomService.leaveRoom(
+      roomId: widget.roomId,
+      userId: currentUserId,
     );
 
-    if (shouldExit == true && mounted) {
-      Navigator.pop(context);
-    }
+    Navigator.pop(context);
   }
+}
+  
 
   void scrollChatToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -139,8 +154,6 @@ class _RoomScreenState extends State<RoomScreen>
       message: text,
       isLeader: currentUser.isLeader,
     );
-
-    scrollChatToBottom();
   }
 
   Future<void> toggleMic() async {
@@ -769,32 +782,58 @@ class _ChatMessagesListState extends State<ChatMessagesList>
     with AutomaticKeepAliveClientMixin {
   late final Stream messagesStream;
   int lastMessagesCount = 0;
+  int unreadMessagesCount = 0;
 
   @override
   void initState() {
     super.initState();
+
     messagesStream = widget.roomService.messagesStream(widget.roomId);
+
+    widget.chatScrollController.addListener(() {
+      if (!mounted) return;
+
+      if (isNearBottom && unreadMessagesCount > 0) {
+        setState(() {
+          unreadMessagesCount = 0;
+        });
+      }
+    });
   }
 
   @override
   bool get wantKeepAlive => true;
 
   bool get isNearBottom {
-    if (!widget.chatScrollController.hasClients) return true;
+    if (!widget.chatScrollController.hasClients) return false;
 
     final position = widget.chatScrollController.position;
-    return position.maxScrollExtent - position.pixels < 80;
+    return position.maxScrollExtent - position.pixels <= 20;
   }
 
   void scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!widget.chatScrollController.hasClients) return;
 
-      widget.chatScrollController.animateTo(
-        widget.chatScrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 220),
+      final targetOffset =
+          widget.chatScrollController.position.maxScrollExtent + 300;
+
+      await widget.chatScrollController.animateTo(
+        targetOffset,
+        duration: const Duration(milliseconds: 260),
         curve: Curves.easeOut,
       );
+
+      if (!mounted) return;
+
+      Future.delayed(const Duration(milliseconds: 120), () {
+        if (!mounted) return;
+        if (!widget.chatScrollController.hasClients) return;
+
+        widget.chatScrollController.jumpTo(
+          widget.chatScrollController.position.maxScrollExtent,
+        );
+      });
     });
   }
 
@@ -854,14 +893,20 @@ class _ChatMessagesListState extends State<ChatMessagesList>
 
         final docs = snapshot.data?.docs ?? [];
 
-        final hadMessagesBefore = lastMessagesCount > 0;
-        final hasNewMessage = docs.length > lastMessagesCount;
-        final shouldAutoScroll = hasNewMessage && (!hadMessagesBefore || isNearBottom);
-        lastMessagesCount = docs.length;
+        final int previousCount = lastMessagesCount;
+        final bool hadMessagesBefore = previousCount > 0;
+        final bool hasNewMessage = docs.length > previousCount;
+        final int newMessagesAmount = docs.length - previousCount;
 
-        if (shouldAutoScroll) {
-          scrollToBottom();
+        if (hasNewMessage && hadMessagesBefore) {
+          if (isNearBottom) {
+            unreadMessagesCount = 0;
+          } else {
+            unreadMessagesCount += newMessagesAmount;
+          }
         }
+
+        lastMessagesCount = docs.length;
 
         if (docs.isEmpty) {
           return const Center(
@@ -872,32 +917,78 @@ class _ChatMessagesListState extends State<ChatMessagesList>
           );
         }
 
-        return ListView.builder(
-          controller: widget.chatScrollController,
-          itemCount: docs.length,
-          itemBuilder: (context, index) {
-            final data = docs[index].data();
-            final item = chatItemFromFirestore(data);
+        return Stack(
+          children: [
+            ListView.builder(
+              controller: widget.chatScrollController,
+              itemCount: docs.length,
+              itemBuilder: (context, index) {
+                final data = docs[index].data();
+                final item = chatItemFromFirestore(data);
 
-            if (item.isSystem) {
-              return SystemMessage(
-                text: item.text,
-                icon: item.icon,
-                customIcon: item.customIcon,
-                image: item.image,
-                isLeader: item.isLeader,
-              );
-            }
+                if (item.isSystem) {
+                  return SystemMessage(
+                    text: item.text,
+                    icon: item.icon,
+                    customIcon: item.customIcon,
+                    image: item.image,
+                    isLeader: item.isLeader,
+                  );
+                }
 
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: ChatBubble(
-                name: item.name,
-                message: item.message,
-                isLeader: item.isLeader,
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: ChatBubble(
+                    name: item.name,
+                    message: item.message,
+                    isLeader: item.isLeader,
+                  ),
+                );
+              },
+            ),
+
+            if (unreadMessagesCount > 0)
+              Positioned(
+                left: 12,
+                bottom: 12,
+                child: GestureDetector(
+                  onTap: () {
+                    scrollToBottom();
+
+                    Future.delayed(const Duration(milliseconds: 500), () {
+                      if (!mounted) return;
+
+                      setState(() {
+                        unreadMessagesCount = 0;
+                      });
+                    });
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.red,
+                      borderRadius: BorderRadius.circular(22),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.black26,
+                          blurRadius: 10,
+                        ),
+                      ],
+                    ),
+                    child: Text(
+                      '$unreadMessagesCount new messages',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            );
-          },
+          ],
         );
       },
     );
