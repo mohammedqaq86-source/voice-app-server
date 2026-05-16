@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:livekit_client/livekit_client.dart' as livekit;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import '../models/room.dart';
 import '../models/room_member_model.dart';
@@ -37,6 +39,14 @@ class _RoomScreenState extends State<RoomScreen>
   final ScrollController chatScrollController = ScrollController();
   final RoomService roomService = RoomService();
   late final AnimationController backgroundController;
+
+  static const String liveKitUrl = 'wss://mohammed-54ar6zrx.livekit.cloud';
+  static const String liveKitToken = 'PASTE_LIVEKIT_TOKEN_HERE';
+
+  final livekit.Room liveKitRoom = livekit.Room();
+
+  bool isVoiceConnected = false;
+  bool isConnectingVoice = false;
 
   bool isMicOn = false;
   bool isRoomOwner = true;
@@ -78,6 +88,8 @@ void dispose() {
   chatScrollController.dispose();
 
   WidgetsBinding.instance.removeObserver(this);
+
+  liveKitRoom.disconnect();
 
   roomService.leaveRoom(
     roomId: widget.roomId,
@@ -129,6 +141,8 @@ void dispose() {
   );
 
   if (shouldExit == true && mounted) {
+    await disconnectVoiceRoom();
+
     await roomService.leaveRoom(
       roomId: widget.roomId,
       userId: currentUserId,
@@ -247,6 +261,75 @@ void dispose() {
     );
   }
 
+  Future<void> connectVoiceRoom() async {
+    if (isVoiceConnected || isConnectingVoice) return;
+
+    if (liveKitToken == 'PASTE_LIVEKIT_TOKEN_HERE') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('LiveKit token is not configured yet'),
+        ),
+      );
+      return;
+    }
+
+    final micPermission = await Permission.microphone.request();
+
+    if (!micPermission.isGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Microphone permission is required'),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      isConnectingVoice = true;
+    });
+
+    try {
+      await liveKitRoom.connect(
+        liveKitUrl,
+        liveKitToken,
+      );
+
+      await liveKitRoom.localParticipant?.setMicrophoneEnabled(false);
+
+      if (!mounted) return;
+
+      setState(() {
+        isVoiceConnected = true;
+        isConnectingVoice = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        isVoiceConnected = false;
+        isConnectingVoice = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to connect voice: $e')),
+      );
+    }
+  }
+
+  Future<void> disconnectVoiceRoom() async {
+    try {
+      await liveKitRoom.localParticipant?.setMicrophoneEnabled(false);
+      await liveKitRoom.disconnect();
+    } catch (_) {}
+
+    if (!mounted) return;
+
+    setState(() {
+      isVoiceConnected = false;
+      isMicOn = false;
+    });
+  }
+
   Future<void> toggleMic() async {
     if (!hasMicPermission) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -255,17 +338,31 @@ void dispose() {
       return;
     }
 
+    await connectVoiceRoom();
+
+    if (!isVoiceConnected) return;
+
     final newMicState = !isMicOn;
 
-    setState(() {
-      isMicOn = newMicState;
-    });
+    try {
+      await liveKitRoom.localParticipant?.setMicrophoneEnabled(newMicState);
 
-    await roomService.updateMicState(
-      roomId: widget.roomId,
-      userId: currentUserId,
-      isMicOn: newMicState,
-    );
+      setState(() {
+        isMicOn = newMicState;
+      });
+
+      await roomService.updateMicState(
+        roomId: widget.roomId,
+        userId: currentUserId,
+        isMicOn: newMicState,
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update microphone: $e')),
+      );
+    }
   }
 
   void sendInvite() {
