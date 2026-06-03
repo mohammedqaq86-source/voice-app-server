@@ -40,6 +40,7 @@ dependencies:
   cloud_firestore: ^6.4.0
   livekit_client: ^2.7.0
   permission_handler: ^12.0.1
+  http: ^1.6.0
 
 dev_dependencies:
   flutter_test:

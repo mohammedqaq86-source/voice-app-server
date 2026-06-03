@@ -1,6 +1,9 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as livekit;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
@@ -41,7 +44,8 @@ class _RoomScreenState extends State<RoomScreen>
   late final AnimationController backgroundController;
 
   static const String liveKitUrl = 'wss://mohammed-54ar6zrx.livekit.cloud';
-  static const String liveKitToken = 'PASTE_LIVEKIT_TOKEN_HERE';
+  static const String liveKitTokenEndpoint =
+      'https://voice-app-server-ssrz.onrender.com/token';
 
   final livekit.Room liveKitRoom = livekit.Room();
 
@@ -261,27 +265,47 @@ void dispose() {
     );
   }
 
+  Future<String> getLiveKitToken() async {
+    final response = await http.post(
+      Uri.parse(liveKitTokenEndpoint),
+      headers: const {
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode({
+        'roomId': widget.roomId,
+        'userId': currentUserId,
+        'userName': currentUserName,
+      }),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception('Token server error: ${response.body}');
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    final token = data['token']?.toString();
+
+    if (token == null || token.isEmpty) {
+      throw Exception('Token is empty');
+    }
+
+    return token;
+  }
+
   Future<void> connectVoiceRoom() async {
     if (isVoiceConnected || isConnectingVoice) return;
 
-    if (liveKitToken == 'PASTE_LIVEKIT_TOKEN_HERE') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('LiveKit token is not configured yet'),
-        ),
-      );
-      return;
-    }
+    if (!kIsWeb) {
+      final micPermission = await Permission.microphone.request();
 
-    final micPermission = await Permission.microphone.request();
-
-    if (!micPermission.isGranted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Microphone permission is required'),
-        ),
-      );
-      return;
+      if (!micPermission.isGranted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Microphone permission is required'),
+          ),
+        );
+        return;
+      }
     }
 
     setState(() {
@@ -289,9 +313,11 @@ void dispose() {
     });
 
     try {
+      final token = await getLiveKitToken();
+
       await liveKitRoom.connect(
         liveKitUrl,
-        liveKitToken,
+        token,
       );
 
       await liveKitRoom.localParticipant?.setMicrophoneEnabled(false);
