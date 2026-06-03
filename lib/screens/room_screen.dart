@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -48,6 +49,8 @@ class _RoomScreenState extends State<RoomScreen>
       'https://voice-app-server-ssrz.onrender.com/token';
 
   final livekit.Room liveKitRoom = livekit.Room();
+  Timer? speakingMonitorTimer;
+  Set<String> speakingUserIds = <String>{};
 
   bool isVoiceConnected = false;
   bool isConnectingVoice = false;
@@ -93,6 +96,7 @@ void dispose() {
 
   WidgetsBinding.instance.removeObserver(this);
 
+  speakingMonitorTimer?.cancel();
   liveKitRoom.disconnect();
 
   roomService.leaveRoom(
@@ -328,12 +332,15 @@ void dispose() {
         isVoiceConnected = true;
         isConnectingVoice = false;
       });
+
+      startSpeakingMonitor();
     } catch (e) {
       if (!mounted) return;
 
       setState(() {
         isVoiceConnected = false;
         isConnectingVoice = false;
+        speakingUserIds = <String>{};
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
@@ -342,7 +349,42 @@ void dispose() {
     }
   }
 
+  void startSpeakingMonitor() {
+    speakingMonitorTimer?.cancel();
+
+    speakingMonitorTimer = Timer.periodic(
+      const Duration(milliseconds: 180),
+      (_) {
+        if (!mounted || !isVoiceConnected) return;
+
+        final activeSpeakerIds = liveKitRoom.activeSpeakers
+            .map((participant) => participant.identity)
+            .whereType<String>()
+            .toSet();
+
+        if (setEquals(activeSpeakerIds, speakingUserIds)) return;
+
+        setState(() {
+          speakingUserIds = activeSpeakerIds;
+        });
+      },
+    );
+  }
+
+  void stopSpeakingMonitor() {
+    speakingMonitorTimer?.cancel();
+    speakingMonitorTimer = null;
+
+    if (!mounted) return;
+
+    setState(() {
+      speakingUserIds = <String>{};
+    });
+  }
+
   Future<void> disconnectVoiceRoom() async {
+    stopSpeakingMonitor();
+
     try {
       await liveKitRoom.localParticipant?.setMicrophoneEnabled(false);
       await liveKitRoom.disconnect();
@@ -728,7 +770,7 @@ void dispose() {
       name: member.name.isEmpty ? 'User' : member.name,
       image: member.image.isEmpty ? 'https://i.pravatar.cc/150' : member.image,
       role: isLeaderUser ? 'Owner' : 'Listener',
-      isSpeaker: member.isMicOn,
+      isSpeaker: speakingUserIds.contains(member.userId),
       hasMicPermission: member.hasMicPermission || isLeaderUser,
       isMicOn: member.isMicOn,
       isLeader: isLeaderUser,
@@ -759,7 +801,7 @@ void dispose() {
               (user) => user.userId == currentUser.userId,
             );
 
-            if (!isStillMember && users.isNotEmpty && mounted) {
+            if (!isStillMember && users.isNotEmpty && mounted && !isRoomOwner) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
@@ -806,7 +848,7 @@ void dispose() {
                             SpeakerAvatar(
                               user: activeSpeaker,
                               radius: 22,
-                              isSpeaking: true,
+                              isSpeaking: activeSpeaker.isSpeaker,
                               showName: false,
                             )
                           else
