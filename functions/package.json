@@ -1,24 +1,16 @@
 {
-  "name": "functions",
-  "description": "Cloud Functions for Firebase",
+  "name": "voice-app-server",
+  "version": "1.0.0",
+  "main": "index.js",
   "scripts": {
-    "serve": "firebase emulators:start --only functions",
-    "shell": "firebase functions:shell",
-    "start": "npm run shell",
-    "deploy": "firebase deploy --only functions",
-    "logs": "firebase functions:log"
+    "start": "node index.js"
   },
   "engines": {
-    "node": "24"
+    "node": "20"
   },
-  "main": "index.js",
   "dependencies": {
-    "firebase-admin": "^13.6.0",
-    "firebase-functions": "^7.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.3",
     "livekit-server-sdk": "^2.15.3"
-  },
-  "devDependencies": {
-    "firebase-functions-test": "^3.4.1"
-  },
-  "private": true
+  }
 }

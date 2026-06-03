@@ -1,30 +1,49 @@
-const { onCall } = require("firebase-functions/v2/https");
-const { setGlobalOptions } = require("firebase-functions/v2");
+const express = require("express");
+const cors = require("cors");
 const { AccessToken } = require("livekit-server-sdk");
 
-setGlobalOptions({ maxInstances: 10 });
+const app = express();
 
-const LIVEKIT_API_KEY = "APIMDPmwfn6mreA";
-const LIVEKIT_API_SECRET = "A7S57LVlGLhETfTSKlRaliIvfhCWcoCGmnactYeOXrzB";
+app.use(cors());
+app.use(express.json());
 
-exports.createLiveKitToken = onCall(async (request) => {
-  const roomId = request.data.roomId;
-  const userId = request.data.userId;
-  const userName = request.data.userName;
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
 
-  const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-    identity: userId,
-    name: userName,
-  });
+app.post("/token", async (req, res) => {
+  try {
+    const { roomId, userId, userName } = req.body;
 
-  token.addGrant({
-    roomJoin: true,
-    room: roomId,
-    canPublish: true,
-    canSubscribe: true,
-  });
+    const token = new AccessToken(
+      LIVEKIT_API_KEY,
+      LIVEKIT_API_SECRET,
+      {
+        identity: userId,
+        name: userName,
+      }
+    );
 
-  return {
-    token: await token.toJwt(),
-  };
+    token.addGrant({
+      roomJoin: true,
+      room: roomId,
+      canPublish: true,
+      canSubscribe: true,
+    });
+
+    const jwt = await token.toJwt();
+
+    res.json({
+      token: jwt,
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: e.toString(),
+    });
+  }
+});
+
+const PORT = process.env.PORT || 10000;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
