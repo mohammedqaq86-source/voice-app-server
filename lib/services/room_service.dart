@@ -22,8 +22,9 @@ class RoomService {
       'ownerImage': ownerImage,
       'isPrivate': isPrivate,
       'isOpen': true,
+      'isRealRoom': true,
       'usersCount': 1,
-      'speakersCount': 1,
+      'speakersCount': 0,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
       'lastOpenedAt': FieldValue.serverTimestamp(),
@@ -87,6 +88,7 @@ class RoomService {
         .collection('rooms')
         .where('isOpen', isEqualTo: true)
         .where('isPrivate', isEqualTo: false)
+        .where('isRealRoom', isEqualTo: true)
         .snapshots();
   }
 
@@ -153,6 +155,14 @@ class RoomService {
         .collection('invites')
         .doc(roomId);
 
+    final kickedRef = _firestore
+        .collection('rooms')
+        .doc(roomId)
+        .collection('kickedUsers')
+        .doc(invitedUserId);
+
+    batch.delete(kickedRef);
+
     batch.set(roomInviteRef, {
       'roomId': roomId,
       'userId': invitedUserId,
@@ -199,12 +209,41 @@ class RoomService {
           .collection('invites')
           .doc(roomId);
 
-      batch.update(userInviteRef, {
+      batch.set(userInviteRef, {
         'isOpen': isOpen,
-      });
+      }, SetOptions(merge: true));
     }
 
     await batch.commit();
+  }
+
+
+  Future<void> cleanupLegacyRoomMembers({required String roomId}) async {
+    final roomRef = _firestore.collection('rooms').doc(roomId);
+    final members = await roomRef.collection('members').get();
+    final batch = _firestore.batch();
+    var hasDeletes = false;
+
+    for (final doc in members.docs) {
+      final data = doc.data();
+      final userId = (data['userId'] ?? doc.id).toString().toLowerCase().trim();
+      final name = (data['name'] ?? '').toString().toLowerCase().trim();
+
+      final isLegacyFakeUser = userId == 'user_mohammed' ||
+          userId == 'mohammed' ||
+          userId.startsWith('bot_') ||
+          userId.contains('bot') ||
+          name.contains('bot');
+
+      if (isLegacyFakeUser) {
+        batch.delete(doc.reference);
+        hasDeletes = true;
+      }
+    }
+
+    if (hasDeletes) {
+      await batch.commit();
+    }
   }
 
   Future<void> joinRoom({
@@ -215,23 +254,46 @@ class RoomService {
     bool isLeader = false,
     bool hasMicPermission = false,
   }) async {
-    await _firestore
-        .collection('rooms')
-        .doc(roomId)
-        .collection('members')
-        .doc(userId)
-        .set({
+    final roomRef = _firestore.collection('rooms').doc(roomId);
+    final roomDoc = await roomRef.get();
+    if (!roomDoc.exists) return;
+
+    await cleanupLegacyRoomMembers(roomId: roomId);
+
+    final roomData = roomDoc.data() ?? <String, dynamic>{};
+    final ownerId = (roomData['ownerId'] ?? '').toString();
+    final isOwner = ownerId.isNotEmpty && ownerId == userId;
+
+    final kickedDoc = await roomRef.collection('kickedUsers').doc(userId).get();
+    final inviteDoc = await roomRef.collection('invites').doc(userId).get();
+
+    if (kickedDoc.exists && !inviteDoc.exists && !isOwner) {
+      throw Exception('You were removed from this room');
+    }
+
+    final batch = _firestore.batch();
+
+    final memberRef = roomRef.collection('members').doc(userId);
+    batch.set(memberRef, {
       'userId': userId,
       'name': name,
       'image': image,
-      'isLeader': isLeader,
+      'isLeader': isOwner,
       'isOnline': true,
-      'hasMicPermission': hasMicPermission,
+      'hasMicPermission': isOwner || hasMicPermission,
       'isMicOn': false,
       'joinedAt': FieldValue.serverTimestamp(),
       'lastSeen': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
+    if (inviteDoc.exists) {
+      batch.delete(roomRef.collection('kickedUsers').doc(userId));
+      batch.delete(roomRef.collection('invites').doc(userId));
+      batch.delete(_firestore.collection('users').doc(userId).collection('invites').doc(roomId));
+    }
+
+    await batch.commit();
+    await ensureSingleLeader(roomId: roomId);
     await updateRoomCounts(roomId: roomId);
 
     await sendSystemMessage(
@@ -240,7 +302,7 @@ class RoomService {
       userId: userId,
       name: name,
       image: image,
-      isLeader: isLeader,
+      isLeader: isOwner,
     );
   }
 
@@ -248,33 +310,70 @@ class RoomService {
     required String roomId,
     required String userId,
   }) async {
-    await _firestore
+    final memberRef = _firestore
         .collection('rooms')
         .doc(roomId)
         .collection('members')
-        .doc(userId)
-        .delete();
+        .doc(userId);
 
+    await memberRef.set({
+      'isOnline': false,
+      'isMicOn': false,
+      'lastSeen': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    await memberRef.delete();
     await updateRoomCounts(roomId: roomId);
   }
 
-  Future<void> updateRoomCounts({
-    required String roomId,
-  }) async {
+  Future<void> ensureSingleLeader({required String roomId}) async {
+    final roomRef = _firestore.collection('rooms').doc(roomId);
+    final roomDoc = await roomRef.get();
+    if (!roomDoc.exists) return;
+
+    final ownerId = (roomDoc.data()?['ownerId'] ?? '').toString();
+    if (ownerId.isEmpty) return;
+
+    final members = await roomRef.collection('members').get();
+    final batch = _firestore.batch();
+
+    for (final doc in members.docs) {
+      final isOwner = doc.id == ownerId;
+      batch.set(doc.reference, {
+        'isLeader': isOwner,
+        if (isOwner) 'hasMicPermission': true,
+      }, SetOptions(merge: true));
+    }
+
+    await batch.commit();
+  }
+
+  Future<void> updateRoomCounts({required String roomId}) async {
+    await cleanupLegacyRoomMembers(roomId: roomId);
+
     final membersSnapshot = await _firestore
         .collection('rooms')
         .doc(roomId)
         .collection('members')
         .get();
 
-    final membersCount = membersSnapshot.docs.length;
+    final realMembers = membersSnapshot.docs.where((doc) {
+      final data = doc.data();
+      final userId = (data['userId'] ?? doc.id).toString().toLowerCase();
+      final name = (data['name'] ?? '').toString().toLowerCase();
+      final isBot = userId.startsWith('bot_') ||
+          userId == 'user_mohammed' ||
+          userId.contains('bot') ||
+          name.contains('bot');
+      return !isBot;
+    }).toList();
 
-    final speakersCount = membersSnapshot.docs.where((doc) {
+    final speakersCount = realMembers.where((doc) {
       return doc.data()['isMicOn'] == true;
     }).length;
 
     await _firestore.collection('rooms').doc(roomId).update({
-      'usersCount': membersCount,
+      'usersCount': realMembers.length,
       'speakersCount': speakersCount,
     });
   }
@@ -289,10 +388,11 @@ class RoomService {
         .doc(roomId)
         .collection('members')
         .doc(userId)
-        .update({
+        .set({
       'hasMicPermission': hasMicPermission,
       if (!hasMicPermission) 'isMicOn': false,
-    });
+      'lastSeen': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
 
     await updateRoomCounts(roomId: roomId);
   }
@@ -307,9 +407,10 @@ class RoomService {
         .doc(roomId)
         .collection('members')
         .doc(userId)
-        .update({
+        .set({
       'isMicOn': isMicOn,
-    });
+      'lastSeen': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
 
     await updateRoomCounts(roomId: roomId);
   }
@@ -322,19 +423,13 @@ class RoomService {
   }) async {
     final batch = _firestore.batch();
 
-    final memberRef = _firestore
-        .collection('rooms')
-        .doc(roomId)
-        .collection('members')
-        .doc(userId);
-
-    final kickedRef = _firestore
-        .collection('rooms')
-        .doc(roomId)
-        .collection('kickedUsers')
-        .doc(userId);
+    final roomRef = _firestore.collection('rooms').doc(roomId);
+    final memberRef = roomRef.collection('members').doc(userId);
+    final kickedRef = roomRef.collection('kickedUsers').doc(userId);
 
     batch.delete(memberRef);
+    batch.delete(roomRef.collection('invites').doc(userId));
+    batch.delete(_firestore.collection('users').doc(userId).collection('invites').doc(roomId));
 
     batch.set(kickedRef, {
       'userId': userId,
@@ -345,7 +440,6 @@ class RoomService {
     });
 
     await batch.commit();
-
     await updateRoomCounts(roomId: roomId);
 
     await sendSystemMessage(
@@ -363,15 +457,15 @@ class RoomService {
     required String userId,
   }) async {
     final roomDoc = await _firestore.collection('rooms').doc(roomId).get();
-
     if (!roomDoc.exists) return false;
 
     final room = roomDoc.data()!;
-    final bool isOpen = room['isOpen'] == true;
-    final bool isPrivate = room['isPrivate'] == true;
-    final String ownerId = room['ownerId'] ?? '';
+    final isOpen = room['isOpen'] == true;
+    final isPrivate = room['isPrivate'] == true;
+    final ownerId = (room['ownerId'] ?? '').toString();
 
     if (!isOpen) return false;
+    if (ownerId.isEmpty) return false;
     if (ownerId == userId) return true;
 
     final kickedDoc = await _firestore
@@ -388,15 +482,63 @@ class RoomService {
         .doc(userId)
         .get();
 
-    if (kickedDoc.exists && !inviteDoc.exists) {
-      return false;
-    }
-
-    if (isPrivate && !inviteDoc.exists) {
-      return false;
-    }
+    if (kickedDoc.exists && !inviteDoc.exists) return false;
+    if (isPrivate && !inviteDoc.exists) return false;
 
     return true;
+  }
+
+  Future<void> transferRoomLeadership({
+    required String roomId,
+    required String oldOwnerId,
+    required String newOwnerId,
+    required String newOwnerName,
+    required String newOwnerImage,
+  }) async {
+    if (newOwnerId.trim().isEmpty || newOwnerId == oldOwnerId) return;
+
+    final roomRef = _firestore.collection('rooms').doc(roomId);
+    final roomDoc = await roomRef.get();
+    if (!roomDoc.exists) return;
+
+    final currentOwnerId = (roomDoc.data()?['ownerId'] ?? '').toString();
+    if (currentOwnerId != oldOwnerId) {
+      throw Exception('Only the current leader can transfer leadership');
+    }
+
+    final members = await roomRef.collection('members').get();
+    final batch = _firestore.batch();
+
+    batch.update(roomRef, {
+      'ownerId': newOwnerId,
+      'ownerName': newOwnerName,
+      'ownerImage': newOwnerImage,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    for (final doc in members.docs) {
+      final isNewOwner = doc.id == newOwnerId;
+      final isOldOwner = doc.id == oldOwnerId;
+      batch.set(doc.reference, {
+        'isLeader': isNewOwner,
+        'hasMicPermission': isNewOwner
+            ? true
+            : (isOldOwner ? false : (doc.data()['hasMicPermission'] == true)),
+        if (isOldOwner) 'isMicOn': false,
+      }, SetOptions(merge: true));
+    }
+
+    await batch.commit();
+
+    await sendSystemMessage(
+      roomId: roomId,
+      text: '$newOwnerName is now the room leader',
+      userId: newOwnerId,
+      name: newOwnerName,
+      image: newOwnerImage,
+      isLeader: true,
+      icon: Icons.workspace_premium_rounded,
+    );
   }
 
   Future<void> sendMessage({
@@ -410,11 +552,7 @@ class RoomService {
     String? replyToMessage,
     List<String> mentions = const [],
   }) async {
-    await _firestore
-        .collection('rooms')
-        .doc(roomId)
-        .collection('messages')
-        .add({
+    await _firestore.collection('rooms').doc(roomId).collection('messages').add({
       'type': 'message',
       'userId': userId,
       'name': name,
@@ -438,11 +576,7 @@ class RoomService {
     IconData? icon,
     String? customIcon,
   }) async {
-    await _firestore
-        .collection('rooms')
-        .doc(roomId)
-        .collection('messages')
-        .add({
+    await _firestore.collection('rooms').doc(roomId).collection('messages').add({
       'type': 'system',
       'text': text,
       'userId': userId,
@@ -476,5 +610,149 @@ class RoomService {
 
   Stream<DocumentSnapshot<Map<String, dynamic>>> roomStream(String roomId) {
     return _firestore.collection('rooms').doc(roomId).snapshots();
+  }
+
+  Stream<DocumentSnapshot<Map<String, dynamic>>> friendLinkStream({
+    required String currentUserId,
+    required String otherUserId,
+  }) {
+    return _firestore
+        .collection('users')
+        .doc(currentUserId)
+        .collection('socialLinks')
+        .doc(otherUserId)
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> friendsStream({
+    required String userId,
+  }) {
+    return _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('socialLinks')
+        .where('status', isEqualTo: 'friends')
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> incomingFriendRequestsStream({
+    required String userId,
+  }) {
+    return _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('socialLinks')
+        .where('status', isEqualTo: 'pending_received')
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> sentFriendRequestsStream({
+    required String userId,
+  }) {
+    return _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('socialLinks')
+        .where('status', isEqualTo: 'pending_sent')
+        .snapshots();
+  }
+
+  Future<void> sendFriendRequest({
+    required String fromUserId,
+    required String fromName,
+    required String fromImage,
+    required String toUserId,
+    required String toName,
+    required String toImage,
+  }) async {
+    if (fromUserId == toUserId) return;
+
+    final batch = _firestore.batch();
+
+    final fromLink = _firestore
+        .collection('users')
+        .doc(fromUserId)
+        .collection('socialLinks')
+        .doc(toUserId);
+
+    final toLink = _firestore
+        .collection('users')
+        .doc(toUserId)
+        .collection('socialLinks')
+        .doc(fromUserId);
+
+    batch.set(fromLink, {
+      'userId': toUserId,
+      'name': toName,
+      'image': toImage,
+      'status': 'pending_sent',
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    batch.set(toLink, {
+      'userId': fromUserId,
+      'name': fromName,
+      'image': fromImage,
+      'status': 'pending_received',
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+  }
+
+  Future<void> cancelFriendRequest({
+    required String fromUserId,
+    required String toUserId,
+  }) async {
+    final batch = _firestore.batch();
+    batch.delete(_firestore.collection('users').doc(fromUserId).collection('socialLinks').doc(toUserId));
+    batch.delete(_firestore.collection('users').doc(toUserId).collection('socialLinks').doc(fromUserId));
+    await batch.commit();
+  }
+
+  Future<void> rejectFriendRequest({
+    required String currentUserId,
+    required String otherUserId,
+  }) async {
+    await cancelFriendRequest(fromUserId: currentUserId, toUserId: otherUserId);
+  }
+
+  Future<void> acceptFriendRequest({
+    required String currentUserId,
+    required String currentName,
+    required String currentImage,
+    required String otherUserId,
+    required String otherName,
+    required String otherImage,
+  }) async {
+    final batch = _firestore.batch();
+
+    final currentLink = _firestore.collection('users').doc(currentUserId).collection('socialLinks').doc(otherUserId);
+    final otherLink = _firestore.collection('users').doc(otherUserId).collection('socialLinks').doc(currentUserId);
+
+    batch.set(currentLink, {
+      'userId': otherUserId,
+      'name': otherName,
+      'image': otherImage,
+      'status': 'friends',
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    batch.set(otherLink, {
+      'userId': currentUserId,
+      'name': currentName,
+      'image': currentImage,
+      'status': 'friends',
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    await batch.commit();
+  }
+
+  Future<void> removeFriend({
+    required String currentUserId,
+    required String otherUserId,
+  }) async {
+    await cancelFriendRequest(fromUserId: currentUserId, toUserId: otherUserId);
   }
 }

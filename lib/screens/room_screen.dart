@@ -59,6 +59,10 @@ class _RoomScreenState extends State<RoomScreen>
   bool isMicOn = false;
   bool everyoneCanUseMic = false;
   late bool isPrivateRoom;
+  StreamSubscription<dynamic>? roomSubscription;
+  String currentOwnerId = '';
+  String currentOwnerName = '';
+  String currentOwnerImage = '';
 
   User? get firebaseUser => FirebaseAuth.instance.currentUser;
 
@@ -92,15 +96,8 @@ class _RoomScreenState extends State<RoomScreen>
   }
 
   bool get isRoomOwner {
-    final ownerId = widget.room.ownerId.trim();
-
-    if (ownerId.isNotEmpty && ownerId == currentUserId) {
-      return true;
-    }
-
-    // Temporary fallback until ownerId is saved when creating rooms.
-    // This keeps Mohammed as the room leader/admin during testing.
-    return isMohammedLeaderName(currentUserName);
+    final ownerId = currentOwnerId.trim();
+    return ownerId.isNotEmpty && ownerId == currentUserId;
   }
 
   List<RoomUser> users = [];
@@ -119,7 +116,7 @@ class _RoomScreenState extends State<RoomScreen>
         name: currentUserName,
         image: currentUserImage,
         isLeader: isRoomOwner,
-        hasMicPermission: true,
+        hasMicPermission: isRoomOwner,
       );
     } catch (e) {
       if (!mounted) return;
@@ -135,6 +132,28 @@ class _RoomScreenState extends State<RoomScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     isPrivateRoom = widget.room.isPrivate;
+    currentOwnerId = widget.room.ownerId;
+    currentOwnerName = widget.room.ownerName;
+    currentOwnerImage = widget.room.ownerImage;
+
+    roomSubscription = roomService.roomStream(widget.roomId).listen((snapshot) {
+      final data = snapshot.data();
+      if (!mounted || data == null) return;
+
+      final nextOwnerId = (data['ownerId'] ?? '').toString();
+      final nextOwnerName = (data['ownerName'] ?? '').toString();
+      final nextOwnerImage = (data['ownerImage'] ?? '').toString();
+
+      if (nextOwnerId != currentOwnerId ||
+          nextOwnerName != currentOwnerName ||
+          nextOwnerImage != currentOwnerImage) {
+        setState(() {
+          currentOwnerId = nextOwnerId;
+          currentOwnerName = nextOwnerName;
+          currentOwnerImage = nextOwnerImage;
+        });
+      }
+    });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ensureCurrentUserIsMember();
@@ -163,6 +182,7 @@ void dispose() {
 
   WidgetsBinding.instance.removeObserver(this);
 
+  roomSubscription?.cancel();
   speakingMonitorTimer?.cancel();
   liveKitRoom.disconnect();
 
@@ -182,8 +202,9 @@ void dispose() {
         name: currentUserName,
         image: currentUserImage,
         role: isRoomOwner ? 'Owner' : 'Listener',
+        countryFlag: '🇸🇦',
         isSpeaker: false,
-        hasMicPermission: true,
+        hasMicPermission: isRoomOwner,
         isMicOn: false,
         isLeader: isRoomOwner,
       ),
@@ -191,45 +212,40 @@ void dispose() {
   }
 
   bool get hasMicPermission {
-    // Temporary testing mode: allow all room members to use the mic.
-    // Later we can return to:
-    // currentUser.hasMicPermission || everyoneCanUseMic || isRoomOwner
-    return true;
+    return currentUser.hasMicPermission || everyoneCanUseMic || isRoomOwner;
   }
 
   Future<void> confirmExitRoom() async {
-  final shouldExit = await showDialog<bool>(
-    context: context,
-    builder: (context) {
-      return AlertDialog(
-        title: const Text('Leave room'),
-        content: const Text('Are you sure you want to leave this room?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('No'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Yes'),
-          ),
-        ],
-      );
-    },
-  );
-
-  if (shouldExit == true && mounted) {
-    await disconnectVoiceRoom();
-
-    await roomService.leaveRoom(
-      roomId: widget.roomId,
-      userId: currentUserId,
+    final shouldExit = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Leave room'),
+          content: const Text('Are you sure you want to leave this room?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('No'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Yes'),
+            ),
+          ],
+        );
+      },
     );
 
+    if (shouldExit != true || !mounted) return;
+
     Navigator.pop(context);
+
+    unawaited(disconnectVoiceRoom());
+    unawaited(roomService.leaveRoom(
+      roomId: widget.roomId,
+      userId: currentUserId,
+    ));
   }
-}
-  
 
   void scrollChatToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -477,25 +493,35 @@ void dispose() {
     }
 
     await connectVoiceRoom();
-
     if (!isVoiceConnected) return;
 
+    final previousMicState = isMicOn;
     final newMicState = !isMicOn;
+
+    setState(() {
+      isMicOn = newMicState;
+    });
+
+    unawaited(roomService.updateMicState(
+      roomId: widget.roomId,
+      userId: currentUserId,
+      isMicOn: newMicState,
+    ));
 
     try {
       await liveKitRoom.localParticipant?.setMicrophoneEnabled(newMicState);
-
-      setState(() {
-        isMicOn = newMicState;
-      });
-
-      await roomService.updateMicState(
-        roomId: widget.roomId,
-        userId: currentUserId,
-        isMicOn: newMicState,
-      );
     } catch (e) {
       if (!mounted) return;
+
+      setState(() {
+        isMicOn = previousMicState;
+      });
+
+      unawaited(roomService.updateMicState(
+        roomId: widget.roomId,
+        userId: currentUserId,
+        isMicOn: previousMicState,
+      ));
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to update microphone: $e')),
@@ -518,6 +544,173 @@ void dispose() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Invite system opened')),
     );
+  }
+
+
+  void showFriendsList() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF17112F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      builder: (context) {
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 52,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                const Row(
+                  children: [
+                    Icon(
+                      Icons.people_alt_rounded,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                    SizedBox(width: 10),
+                    Text(
+                      'قائمة الأصدقاء',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                      color: Colors.white.withOpacity(0.08),
+                    ),
+                  ),
+                  child: const Text(
+                    'هنا ستظهر قائمة الأصدقاء وطلبات الصداقة بعد ربطها مع Firestore.',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 15,
+                      height: 1.5,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void showRoomMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF17112F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      builder: (context) {
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 52,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                ListTile(
+                  leading: const Icon(
+                    Icons.people_alt_rounded,
+                    color: Colors.white,
+                  ),
+                  title: const Text(
+                    'قائمة الأصدقاء',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(context);
+                    showFriendsList();
+                  },
+                ),
+                if (isRoomOwner)
+                  ListTile(
+                    leading: const Icon(
+                      Icons.settings_rounded,
+                      color: Colors.white,
+                    ),
+                    title: const Text(
+                      'إعدادات الروم',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    onTap: () {
+                      Navigator.pop(context);
+                      openRoomSettings();
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> makeUserLeader(RoomUser user) async {
+    if (!isRoomOwner || user.userId == currentUserId) return;
+
+    try {
+      await roomService.transferRoomLeadership(
+        roomId: widget.roomId,
+        oldOwnerId: currentUserId,
+        newOwnerId: user.userId,
+        newOwnerName: user.name,
+        newOwnerImage: user.image,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        currentOwnerId = user.userId;
+        currentOwnerName = user.name;
+        currentOwnerImage = user.image;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${user.name} is now the room leader')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to transfer leader: $e')),
+      );
+    }
   }
 
   void openRoomSettings() {
@@ -625,6 +818,17 @@ void dispose() {
 
     final newPermission = !user.hasMicPermission;
 
+    setState(() {
+      users = users.map((item) {
+        if (item.userId != user.userId) return item;
+
+        return item.copyWith(
+          hasMicPermission: newPermission,
+          isMicOn: newPermission ? item.isMicOn : false,
+        );
+      }).toList();
+    });
+
     try {
       await roomService.updateMicPermission(
         roomId: widget.roomId,
@@ -632,7 +836,7 @@ void dispose() {
         hasMicPermission: newPermission,
       );
 
-      await roomService.sendSystemMessage(
+      unawaited(roomService.sendSystemMessage(
         roomId: widget.roomId,
         text: newPermission
             ? '${user.name} got the mic'
@@ -642,9 +846,20 @@ void dispose() {
         image: user.image,
         isLeader: user.isLeader,
         icon: newPermission ? Icons.mic_rounded : Icons.mic_off_rounded,
-      );
+      ));
     } catch (e) {
       if (!mounted) return;
+
+      setState(() {
+        users = users.map((item) {
+          if (item.userId != user.userId) return item;
+
+          return item.copyWith(
+            hasMicPermission: user.hasMicPermission,
+            isMicOn: user.isMicOn,
+          );
+        }).toList();
+      });
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to update mic: $e')),
@@ -652,19 +867,33 @@ void dispose() {
     }
   }
 
-  void kickUser(RoomUser user) {
-    if (!isRoomOwner || user.userId == currentUser.userId) return;
+  Future<void> kickUser(RoomUser user) async {
+    if (!isRoomOwner || user.userId == currentUserId) return;
 
-    roomService.kickUser(
-      roomId: widget.roomId,
-      userId: user.userId,
-      name: user.name,
-      image: user.image,
-    );
+    setState(() {
+      users = users.where((item) => item.userId != user.userId).toList();
+    });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${user.name} can only rejoin by invitation')),
-    );
+    try {
+      await roomService.kickUser(
+        roomId: widget.roomId,
+        userId: user.userId,
+        name: user.name,
+        image: user.image,
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${user.name} can only rejoin by invitation')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to kick user: $e')),
+      );
+    }
   }
 
   void showRoomUsers() {
@@ -736,12 +965,18 @@ void dispose() {
                         return RoomUserTile(
                           user: user,
                           isAdmin: isRoomOwner,
-                          currentUserId: currentUser.userId,
+                          currentUserId: currentUserId,
+                          currentUserName: currentUserName,
+                          currentUserImage: currentUserImage,
+                          roomService: roomService,
                           onToggleMicPermission: () {
                             toggleUserMicPermission(user);
                           },
                           onKick: () {
-                            kickUser(user);
+                            unawaited(kickUser(user));
+                          },
+                          onMakeLeader: () {
+                            unawaited(makeUserLeader(user));
                           },
                         );
                       },
@@ -817,9 +1052,26 @@ void dispose() {
     );
   }
 
-  bool isMohammedLeaderName(String name) {
-    final normalizedName = name.trim().toLowerCase();
-    return normalizedName == 'mohammed' || normalizedName == 'محمد';
+
+  String countryFlagFromData(Map<String, dynamic> data) {
+    final rawCode = (data['countryCode'] ?? data['country'] ?? 'SA')
+        .toString()
+        .trim()
+        .toUpperCase();
+
+    if (rawCode.length != 2) return '🏳️';
+
+    final first = rawCode.codeUnitAt(0) - 0x41 + 0x1F1E6;
+    final second = rawCode.codeUnitAt(1) - 0x41 + 0x1F1E6;
+
+    if (first < 0x1F1E6 ||
+        first > 0x1F1FF ||
+        second < 0x1F1E6 ||
+        second > 0x1F1FF) {
+      return '🏳️';
+    }
+
+    return String.fromCharCode(first) + String.fromCharCode(second);
   }
 
   RoomUser roomUserFromFirestore(
@@ -832,16 +1084,16 @@ void dispose() {
         'userId': documentId,
     });
 
-    final isLeaderUser = member.isLeader ||
-        isMohammedLeaderName(member.name) ||
-        (widget.room.ownerId.trim().isNotEmpty &&
-            member.userId == widget.room.ownerId);
+    final isLeaderUser =
+        currentOwnerId.trim().isNotEmpty &&
+        member.userId == currentOwnerId;
 
     return RoomUser(
       userId: member.userId,
       name: member.name.isEmpty ? 'User' : member.name,
       image: member.image.isEmpty ? 'https://i.pravatar.cc/150' : member.image,
       role: isLeaderUser ? 'Owner' : 'Listener',
+      countryFlag: countryFlagFromData(data),
       isSpeaker: speakingUserIds.contains(member.userId),
       hasMicPermission: member.hasMicPermission || isLeaderUser,
       isMicOn: member.isMicOn,
@@ -867,11 +1119,29 @@ void dispose() {
                     documentId: doc.id,
                   ),
                 )
-                .toList();
+                .where((user) {
+                  final id = user.userId.toLowerCase();
+                  final name = user.name.toLowerCase();
+                  return !id.startsWith('bot_') &&
+                      id != 'user_mohammed' &&
+                      id != 'mohammed' &&
+                      !id.contains('bot') &&
+                      !name.contains('bot');
+                })
+                .toList()
+              ..sort((a, b) {
+                if (a.isLeader != b.isLeader) return a.isLeader ? -1 : 1;
+                if (a.isMicOn != b.isMicOn) return a.isMicOn ? -1 : 1;
+                return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+              });
 
-            final activeSpeaker = users.where((user) => user.isMicOn).isNotEmpty
-                ? users.firstWhere((user) => user.isMicOn)
-                : null;
+            final topUsers = users
+                .where((user) => user.isMicOn)
+                .toList()
+              ..sort((a, b) {
+                if (a.isSpeaker != b.isSpeaker) return a.isSpeaker ? -1 : 1;
+                return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+              });
 
             return AnimatedWaveRoomBackground(
               controller: backgroundController,
@@ -900,22 +1170,34 @@ void dispose() {
                             ),
                           ),
                           const Spacer(),
-                          if (activeSpeaker != null)
-                            SpeakerAvatar(
-                              user: activeSpeaker,
-                              radius: 22,
-                              isSpeaking: activeSpeaker.isSpeaker,
-                              showName: false,
+                          if (topUsers.isNotEmpty)
+                            SizedBox(
+                              height: 68,
+                              width: 170,
+                              child: ListView.separated(
+                                scrollDirection: Axis.horizontal,
+                                itemCount: topUsers.length,
+                                separatorBuilder: (_, __) => const SizedBox(width: 14),
+                                itemBuilder: (context, index) {
+                                  final activeUser = topUsers[index];
+                                  return SpeakerAvatar(
+                                    user: activeUser,
+                                    radius: 22,
+                                    isSpeaking: activeUser.isSpeaker,
+                                    showName: false,
+                                  );
+                                },
+                              ),
                             )
                           else
-                            const SizedBox(width: 44),
+                            const SizedBox(width: 170),
                           const Spacer(),
                           IconButton(
-                            onPressed: () {},
+                            onPressed: showRoomMenu,
                             icon: const Icon(
-                              Icons.search,
+                              Icons.menu_rounded,
                               color: Colors.white,
-                              size: 30,
+                              size: 32,
                             ),
                           ),
                           IconButton(
@@ -1506,6 +1788,7 @@ class RoomUser {
   final String name;
   final String image;
   final String role;
+  final String countryFlag;
   final bool isSpeaker;
   final bool isLeader;
   final bool isMicOn;
@@ -1516,11 +1799,37 @@ class RoomUser {
     required this.name,
     required this.image,
     required this.role,
+    this.countryFlag = '🇸🇦',
     required this.isSpeaker,
     required this.hasMicPermission,
     required this.isMicOn,
     this.isLeader = false,
   });
+
+
+  RoomUser copyWith({
+    String? userId,
+    String? name,
+    String? image,
+    String? role,
+    String? countryFlag,
+    bool? isSpeaker,
+    bool? isLeader,
+    bool? isMicOn,
+    bool? hasMicPermission,
+  }) {
+    return RoomUser(
+      userId: userId ?? this.userId,
+      name: name ?? this.name,
+      image: image ?? this.image,
+      role: role ?? this.role,
+      countryFlag: countryFlag ?? this.countryFlag,
+      isSpeaker: isSpeaker ?? this.isSpeaker,
+      isLeader: isLeader ?? this.isLeader,
+      isMicOn: isMicOn ?? this.isMicOn,
+      hasMicPermission: hasMicPermission ?? this.hasMicPermission,
+    );
+  }
 }
 
 class SpeakerAvatar extends StatefulWidget {
@@ -1923,21 +2232,111 @@ class RoomUserTile extends StatelessWidget {
     required this.user,
     required this.isAdmin,
     required this.currentUserId,
+    required this.currentUserName,
+    required this.currentUserImage,
+    required this.roomService,
     required this.onToggleMicPermission,
     required this.onKick,
+    required this.onMakeLeader,
   });
 
   final RoomUser user;
   final bool isAdmin;
   final String currentUserId;
+  final String currentUserName;
+  final String currentUserImage;
+  final RoomService roomService;
   final VoidCallback onToggleMicPermission;
   final VoidCallback onKick;
+  final VoidCallback onMakeLeader;
+
+  bool get isCurrentUser => user.userId == currentUserId;
+
+  Future<void> handleFriendAction(BuildContext context, String status) async {
+    try {
+      if (status == 'pending_sent') {
+        await roomService.cancelFriendRequest(
+          fromUserId: currentUserId,
+          toUserId: user.userId,
+        );
+      } else if (status == 'pending_received') {
+        await roomService.acceptFriendRequest(
+          currentUserId: currentUserId,
+          currentName: currentUserName,
+          currentImage: currentUserImage,
+          otherUserId: user.userId,
+          otherName: user.name,
+          otherImage: user.image,
+        );
+      } else if (status == 'friends') {
+        await roomService.removeFriend(
+          currentUserId: currentUserId,
+          otherUserId: user.userId,
+        );
+      } else {
+        await roomService.sendFriendRequest(
+          fromUserId: currentUserId,
+          fromName: currentUserName,
+          fromImage: currentUserImage,
+          toUserId: user.userId,
+          toName: user.name,
+          toImage: user.image,
+        );
+      }
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Friend action failed: $e')),
+      );
+    }
+  }
+
+  Widget friendButton() {
+    if (isCurrentUser) return const SizedBox.shrink();
+
+    return StreamBuilder(
+      stream: roomService.friendLinkStream(
+        currentUserId: currentUserId,
+        otherUserId: user.userId,
+      ),
+      builder: (context, snapshot) {
+        final doc = snapshot.data as dynamic;
+        final data = doc?.data() as Map<String, dynamic>?;
+        final status = (data?['status'] ?? 'none').toString();
+
+        IconData icon = Icons.person_add_alt_1_rounded;
+        Color color = Colors.white;
+        String tooltip = 'إضافة صديق';
+
+        if (status == 'pending_sent') {
+          icon = Icons.check_circle_rounded;
+          color = Colors.greenAccent;
+          tooltip = 'سحب طلب الصداقة';
+        } else if (status == 'pending_received') {
+          icon = Icons.person_add_alt_rounded;
+          color = Colors.orangeAccent;
+          tooltip = 'قبول طلب الصداقة';
+        } else if (status == 'friends') {
+          icon = Icons.people_alt_rounded;
+          color = Colors.lightBlueAccent;
+          tooltip = 'إزالة الصديق';
+        }
+
+        return IconButton(
+          tooltip: tooltip,
+          onPressed: () => handleFriendAction(context, status),
+          icon: Icon(icon, color: color, size: 24),
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final isLeaderUser = user.isLeader || user.role.toLowerCase() == 'owner';
-    final canManageUser =
-        isAdmin && user.userId.trim().isNotEmpty && user.userId != currentUserId;
+    final canManageUser = isAdmin &&
+        user.userId.trim().isNotEmpty &&
+        user.userId != currentUserId;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -1958,9 +2357,13 @@ class RoomUserTile extends StatelessWidget {
             isLeader: isLeaderUser,
           ),
           const SizedBox(width: 12),
+          Text(user.countryFlag, style: const TextStyle(fontSize: 20)),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               user.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 18,
@@ -1968,6 +2371,7 @@ class RoomUserTile extends StatelessWidget {
               ),
             ),
           ),
+          friendButton(),
           if (canManageUser) ...[
             IconButton(
               onPressed: onToggleMicPermission,
@@ -1975,28 +2379,39 @@ class RoomUserTile extends StatelessWidget {
                 user.hasMicPermission
                     ? Icons.mic_rounded
                     : Icons.mic_off_rounded,
-                color: user.hasMicPermission ? Colors.greenAccent : Colors.redAccent,
+                color: user.hasMicPermission
+                    ? Colors.greenAccent
+                    : Colors.redAccent,
                 size: 24,
               ),
             ),
             PopupMenuButton<String>(
-              icon: const Icon(
-                Icons.more_vert,
-                color: Colors.white,
-              ),
+              icon: const Icon(Icons.more_vert, color: Colors.white),
               color: const Color(0xFF21153E),
               onSelected: (value) {
-                if (value == 'kick') {
-                  onKick();
-                }
+                if (value == 'make_leader') onMakeLeader();
+                if (value == 'kick') onKick();
               },
               itemBuilder: (context) {
                 return const [
                   PopupMenuItem(
+                    value: 'make_leader',
+                    child: Row(
+                      children: [
+                        Icon(Icons.workspace_premium_rounded, color: Colors.amber, size: 20),
+                        SizedBox(width: 8),
+                        Text('Make Leader', style: TextStyle(color: Colors.white)),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
                     value: 'kick',
-                    child: Text(
-                      'Kick',
-                      style: TextStyle(color: Colors.white),
+                    child: Row(
+                      children: [
+                        Icon(Icons.block_rounded, color: Colors.redAccent, size: 20),
+                        SizedBox(width: 8),
+                        Text('Kick', style: TextStyle(color: Colors.white)),
+                      ],
                     ),
                   ),
                 ];

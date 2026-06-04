@@ -1,13 +1,14 @@
 import 'dart:math' as math;
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/room.dart';
 import '../services/room_service.dart';
 import '../widgets/room_card.dart';
 import '../widgets/search_box.dart';
 import 'room_screen.dart';
-import 'youtube_picker_screen.dart';
 import 'source_picker_screen.dart';
+import 'youtube_picker_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,9 +22,35 @@ class _HomeScreenState extends State<HomeScreen>
   final RoomService roomService = RoomService();
   late final AnimationController backgroundController;
 
-  final String currentUserId = 'user_mohammed';
-  final String currentUserName = 'Mohammed';
-  final String currentUserImage = 'https://i.pravatar.cc/150?img=11';
+  User? get firebaseUser => FirebaseAuth.instance.currentUser;
+
+  String get currentUserId => firebaseUser?.uid ?? 'guest_user';
+
+  String get currentUserName {
+    final displayName = firebaseUser?.displayName?.trim();
+
+    if (displayName != null && displayName.isNotEmpty) {
+      return displayName;
+    }
+
+    final email = firebaseUser?.email?.trim();
+
+    if (email != null && email.isNotEmpty) {
+      return email.split('@').first;
+    }
+
+    return 'User';
+  }
+
+  String get currentUserImage {
+    final photoUrl = firebaseUser?.photoURL?.trim();
+
+    if (photoUrl != null && photoUrl.isNotEmpty) {
+      return photoUrl;
+    }
+
+    return 'https://i.pravatar.cc/150?u=$currentUserId';
+  }
 
   @override
   void initState() {
@@ -62,6 +89,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
 
     final newRoom = Room(
+      id: roomId,
       title: video.title,
       image: video.image,
       users: 1,
@@ -69,6 +97,9 @@ class _HomeScreenState extends State<HomeScreen>
       hasYoutube: true,
       videoId: 'jfKfPfyJRdk',
       isPrivate: false,
+      ownerId: currentUserId,
+      ownerName: currentUserName,
+      ownerImage: currentUserImage,
     );
 
     if (!mounted) return;
@@ -84,15 +115,19 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Room roomFromFirestore(Map<String, dynamic> data) {
+  Room roomFromFirestore(Map<String, dynamic> data, {String id = ''}) {
     return Room(
+      id: id,
       title: data['title'] ?? 'Untitled Room',
       image: data['image'] ?? 'https://picsum.photos/400/300',
-      users: data['usersCount'] ?? 0,
-      speakers: data['speakersCount'] ?? 0,
-      hasYoutube: true,
+      users: data['usersCount'] ?? data['users'] ?? 0,
+      speakers: data['speakersCount'] ?? data['speakers'] ?? 0,
+      hasYoutube: data['hasYoutube'] ?? true,
       videoId: data['videoId'] ?? 'jfKfPfyJRdk',
       isPrivate: data['isPrivate'] ?? false,
+      ownerId: data['ownerId'] ?? '',
+      ownerName: data['ownerName'] ?? '',
+      ownerImage: data['ownerImage'] ?? '',
     );
   }
 
@@ -100,6 +135,227 @@ class _HomeScreenState extends State<HomeScreen>
     return roomService.canUserEnterRoom(
       roomId: roomId,
       userId: currentUserId,
+    );
+  }
+
+  void openFriendsPanel() {
+    showGeneralDialog(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'friends-panel',
+      barrierColor: Colors.black.withOpacity(0.35),
+      transitionDuration: const Duration(milliseconds: 260),
+      pageBuilder: (context, animation, secondaryAnimation) {
+        return Align(
+          alignment: Alignment.centerRight,
+          child: FriendsPanel(
+            roomService: roomService,
+            currentUserId: currentUserId,
+            currentUserName: currentUserName,
+            currentUserImage: currentUserImage,
+          ),
+        );
+      },
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(1, 0),
+            end: Offset.zero,
+          ).animate(
+            CurvedAnimation(parent: animation, curve: Curves.easeOut),
+          ),
+          child: child,
+        );
+      },
+    );
+  }
+
+  String flagFromCountryCode(String? countryCode) {
+    if (countryCode == null || countryCode.trim().length != 2) {
+      return '🌐';
+    }
+
+    final code = countryCode.trim().toUpperCase();
+    final firstLetter = code.codeUnitAt(0) - 0x41 + 0x1F1E6;
+    final secondLetter = code.codeUnitAt(1) - 0x41 + 0x1F1E6;
+
+    if (firstLetter < 0x1F1E6 ||
+        firstLetter > 0x1F1FF ||
+        secondLetter < 0x1F1E6 ||
+        secondLetter > 0x1F1FF) {
+      return '🌐';
+    }
+
+    return String.fromCharCodes([firstLetter, secondLetter]);
+  }
+
+  void showRoomMembersPreview({
+    required String roomId,
+    required Room room,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF17112F),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      builder: (context) {
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: SizedBox(
+            height: 420,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
+              child: Column(
+                children: [
+                  Container(
+                    width: 52,
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    room.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'الموجودين داخل الروم',
+                    style: TextStyle(
+                      color: Colors.white60,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Expanded(
+                    child: StreamBuilder(
+                      stream: roomService.membersStream(roomId),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Center(
+                            child: CircularProgressIndicator(color: Colors.white),
+                          );
+                        }
+
+                        if (snapshot.hasError) {
+                          return Center(
+                            child: Text(
+                              'Error: ${snapshot.error}',
+                              style: const TextStyle(color: Colors.white70),
+                              textAlign: TextAlign.center,
+                            ),
+                          );
+                        }
+
+                        final snapshotData = snapshot.data as dynamic;
+                        final docs = snapshotData?.docs ?? [];
+
+                        if (docs.isEmpty) {
+                          return const Center(
+                            child: Text(
+                              'لا يوجد أعضاء داخل الروم الآن',
+                              style: TextStyle(color: Colors.white60),
+                            ),
+                          );
+                        }
+
+                        return ListView.builder(
+                          itemCount: docs.length,
+                          itemBuilder: (context, index) {
+                            final doc = docs[index];
+                            final data = doc.data() as Map<String, dynamic>;
+                            final name =
+                                (data['name'] ?? data['userName'] ?? 'User')
+                                    .toString();
+                            final image =
+                                (data['image'] ?? data['userImage'] ?? '')
+                                    .toString();
+                            final countryCode =
+                                (data['countryCode'] ?? data['country'] ?? '')
+                                    .toString();
+                            final isLeader = data['isLeader'] == true ||
+                                (room.ownerId.isNotEmpty &&
+                                    doc.id == room.ownerId);
+
+                            return ListTile(
+                              leading: CircleAvatar(
+                                backgroundImage: image.isNotEmpty
+                                    ? NetworkImage(image)
+                                    : null,
+                                child: image.isEmpty
+                                    ? const Icon(Icons.person)
+                                    : null,
+                              ),
+                              title: Row(
+                                children: [
+                                  Text(
+                                    flagFromCountryCode(countryCode),
+                                    style: const TextStyle(fontSize: 20),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                  if (isLeader)
+                                    const Icon(
+                                      Icons.workspace_premium_rounded,
+                                      color: Color(0xFFFFD54F),
+                                      size: 21,
+                                    ),
+                                ],
+                              ),
+                              subtitle: Text(
+                                isLeader ? 'Leader' : 'Member',
+                                style: const TextStyle(color: Colors.white54),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget buildRoomCardWithPreview({
+    required String roomId,
+    required Room room,
+  }) {
+    return GestureDetector(
+      onLongPress: () {
+        showRoomMembersPreview(
+          roomId: roomId,
+          room: room,
+        );
+      },
+      child: RoomCard(
+        room: room,
+        roomId: roomId,
+      ),
     );
   }
 
@@ -115,106 +371,126 @@ class _HomeScreenState extends State<HomeScreen>
           onPressed: openSourcePicker,
           child: const Icon(Icons.add, size: 32),
         ),
-        body: AnimatedWaveHomeBackground(
-          controller: backgroundController,
-          child: SafeArea(
-            child: Column(
-              children: [
-                const HomeHeader(),
-                const SearchBox(),
-                InvitedRoomsSection(
-                  roomService: roomService,
-                  currentUserId: currentUserId,
-                  roomFromFirestore: roomFromFirestore,
-                ),
-                Expanded(
-                  child: StreamBuilder(
-                    stream: roomService.publicOpenRoomsStream(),
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState ==
-                          ConnectionState.waiting) {
-                        return const Center(
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                          ),
-                        );
-                      }
+        body: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragEnd: (details) {
+            final velocity = details.primaryVelocity ?? 0;
 
-                      if (snapshot.hasError) {
-                        return Center(
-                          child: Text(
-                            'Error: ${snapshot.error}',
-                            style: const TextStyle(color: Colors.white),
-                            textAlign: TextAlign.center,
-                          ),
-                        );
-                      }
-
-                      final docs = snapshot.data?.docs ?? [];
-
-                      if (docs.isEmpty) {
-                        return const Center(
-                          child: Text(
-                            'ما فيه رومات مفتوحة الآن',
-                            style: TextStyle(
-                              color: Colors.white70,
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        );
-                      }
-
-                      return ListView.builder(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
-                        itemCount: docs.length + 1,
-                        itemBuilder: (context, index) {
-                          if (index == 0) {
-                            return const Padding(
-                              padding: EdgeInsets.fromLTRB(4, 2, 4, 10),
-                              child: Text(
-                                'العام',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                            );
-                          }
-
-                          final docIndex = index - 1;
-                          final roomId = docs[docIndex].id;
-                          final data = docs[docIndex].data();
-                          final room = roomFromFirestore(data);
-
-                          return FutureBuilder<bool>(
-                            future: canShowRoom(roomId),
-                            builder: (context, permissionSnapshot) {
-                              if (permissionSnapshot.connectionState ==
-                                  ConnectionState.waiting) {
-                                return const SizedBox.shrink();
-                              }
-
-                              final canShow =
-                                  permissionSnapshot.data ?? false;
-
-                              if (!canShow) {
-                                return const SizedBox.shrink();
-                              }
-
-                              return RoomCard(
-                                room: room,
-                                roomId: roomId,
-                              );
-                            },
-                          );
-                        },
-                      );
-                    },
+            if (velocity > 350) {
+              openFriendsPanel();
+            }
+          },
+          child: AnimatedWaveHomeBackground(
+            controller: backgroundController,
+            child: SafeArea(
+              child: Column(
+                children: [
+                  HomeHeader(
+                    onOpenMenu: openFriendsPanel,
+                    onOpenFriends: openFriendsPanel,
                   ),
-                ),
-              ],
+                  const SearchBox(),
+                  InvitedRoomsSection(
+                    roomService: roomService,
+                    currentUserId: currentUserId,
+                    roomFromFirestore: roomFromFirestore,
+                    onPreviewRoom: showRoomMembersPreview,
+                  ),
+                  Expanded(
+                    child: StreamBuilder(
+                      stream: roomService.publicOpenRoomsStream(),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                            ),
+                          );
+                        }
+
+                        if (snapshot.hasError) {
+                          return Center(
+                            child: Text(
+                              'Error: ${snapshot.error}',
+                              style: const TextStyle(color: Colors.white),
+                              textAlign: TextAlign.center,
+                            ),
+                          );
+                        }
+
+                        final snapshotData = snapshot.data as dynamic;
+                        final docs = snapshotData?.docs ?? [];
+
+                        if (docs.isEmpty) {
+                          return const Center(
+                            child: Text(
+                              'ما فيه رومات مفتوحة الآن',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          );
+                        }
+
+                        return ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
+                          itemCount: docs.length + 1,
+                          itemBuilder: (context, index) {
+                            if (index == 0) {
+                              return const Padding(
+                                padding: EdgeInsets.fromLTRB(4, 2, 4, 10),
+                                child: Text(
+                                  'العام',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              );
+                            }
+
+                            final docIndex = index - 1;
+                            final roomId = docs[docIndex].id;
+                            final data =
+                                docs[docIndex].data() as Map<String, dynamic>;
+                            if ((data['ownerId'] ?? '').toString().trim().isEmpty) {
+                              return const SizedBox.shrink();
+                            }
+
+                            final room = roomFromFirestore(data, id: roomId);
+
+                            return FutureBuilder<bool>(
+                              future: canShowRoom(roomId),
+                              builder: (context, permissionSnapshot) {
+                                if (permissionSnapshot.connectionState ==
+                                    ConnectionState.waiting) {
+                                  return const SizedBox.shrink();
+                                }
+
+                                final canShow =
+                                    permissionSnapshot.data ?? false;
+
+                                if (!canShow) {
+                                  return const SizedBox.shrink();
+                                }
+
+                                return buildRoomCardWithPreview(
+                                  roomId: roomId,
+                                  room: room,
+                                );
+                              },
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -229,11 +505,16 @@ class InvitedRoomsSection extends StatelessWidget {
     required this.roomService,
     required this.currentUserId,
     required this.roomFromFirestore,
+    required this.onPreviewRoom,
   });
 
   final RoomService roomService;
   final String currentUserId;
-  final Room Function(Map<String, dynamic> data) roomFromFirestore;
+  final Room Function(Map<String, dynamic> data, {String id}) roomFromFirestore;
+  final void Function({
+    required String roomId,
+    required Room room,
+  }) onPreviewRoom;
 
   @override
   Widget build(BuildContext context) {
@@ -251,7 +532,8 @@ class InvitedRoomsSection extends StatelessWidget {
           );
         }
 
-        final invites = snapshot.data?.docs ?? [];
+        final snapshotData = snapshot.data as dynamic;
+        final invites = snapshotData?.docs ?? [];
 
         if (invites.isEmpty) {
           return const SizedBox.shrink();
@@ -298,7 +580,7 @@ class InvitedRoomsSection extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               ...invites.map((inviteDoc) {
-                final invite = inviteDoc.data();
+                final invite = inviteDoc.data() as Map<String, dynamic>;
                 final roomId = invite['roomId']?.toString() ?? inviteDoc.id;
 
                 return FutureBuilder(
@@ -317,19 +599,25 @@ class InvitedRoomsSection extends StatelessWidget {
                       );
                     }
 
-                    if (!roomSnapshot.hasData ||
-                        roomSnapshot.data == null ||
-                        roomSnapshot.data!.exists == false) {
+                    final roomDoc = roomSnapshot.data as dynamic;
+
+                    if (roomDoc == null || roomDoc.exists == false) {
                       return const SizedBox.shrink();
                     }
 
-                    final roomData = roomSnapshot.data!.data();
+                    final roomData = roomDoc.data() as Map<String, dynamic>?;
 
-                    if (roomData == null || roomData['isOpen'] != true) {
+                    if (roomData == null ||
+                        roomData['isOpen'] != true ||
+                        roomData['isRealRoom'] != true) {
                       return const SizedBox.shrink();
                     }
 
-                    final room = roomFromFirestore(roomData);
+                    if ((roomData['ownerId'] ?? '').toString().trim().isEmpty) {
+                      return const SizedBox.shrink();
+                    }
+
+                    final room = roomFromFirestore(roomData, id: roomId);
 
                     return Dismissible(
                       key: ValueKey('invite_$roomId'),
@@ -365,9 +653,17 @@ class InvitedRoomsSection extends StatelessWidget {
 
                         return true;
                       },
-                      child: RoomCard(
-                        room: room,
-                        roomId: roomId,
+                      child: GestureDetector(
+                        onLongPress: () {
+                          onPreviewRoom(
+                            roomId: roomId,
+                            room: room,
+                          );
+                        },
+                        child: RoomCard(
+                          room: room,
+                          roomId: roomId,
+                        ),
                       ),
                     );
                   },
@@ -377,6 +673,315 @@ class InvitedRoomsSection extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class FriendsPanel extends StatelessWidget {
+  const FriendsPanel({
+    super.key,
+    required this.roomService,
+    required this.currentUserId,
+    required this.currentUserName,
+    required this.currentUserImage,
+  });
+
+  final RoomService roomService;
+  final String currentUserId;
+  final String currentUserName;
+  final String currentUserImage;
+
+  Widget _emptyText(String text) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Text(
+        text,
+        style: const TextStyle(color: Colors.white54),
+      ),
+    );
+  }
+
+  Widget _userTile({
+    required Map<String, dynamic> data,
+    required List<Widget> actions,
+  }) {
+    final name = (data['name'] ?? 'User').toString();
+    final image = (data['image'] ?? '').toString();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.06)),
+      ),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundImage: image.isNotEmpty ? NetworkImage(image) : null,
+          child: image.isEmpty ? const Icon(Icons.person) : null,
+        ),
+        title: Text(
+          name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: actions,
+        ),
+      ),
+    );
+  }
+
+  Widget _friendsList() {
+    return StreamBuilder(
+      stream: roomService.friendsStream(userId: currentUserId),
+      builder: (context, snapshot) {
+        final data = snapshot.data as dynamic;
+        final docs = data?.docs ?? [];
+
+        if (docs.isEmpty) return _emptyText('لا يوجد أصدقاء حتى الآن');
+
+        return Column(
+          children: docs.map<Widget>((doc) {
+            final item = doc.data() as Map<String, dynamic>;
+            final otherUserId = (item['userId'] ?? doc.id).toString();
+            return _userTile(
+              data: item,
+              actions: [
+                IconButton(
+                  tooltip: 'إزالة الصديق',
+                  onPressed: () async {
+                    await roomService.removeFriend(
+                      currentUserId: currentUserId,
+                      otherUserId: otherUserId,
+                    );
+                  },
+                  icon: const Icon(Icons.person_remove_rounded, color: Colors.redAccent),
+                ),
+              ],
+            );
+          }).toList(),
+        );
+      },
+    );
+  }
+
+  Widget _incomingRequests() {
+    return StreamBuilder(
+      stream: roomService.incomingFriendRequestsStream(userId: currentUserId),
+      builder: (context, snapshot) {
+        final data = snapshot.data as dynamic;
+        final docs = data?.docs ?? [];
+
+        if (docs.isEmpty) return _emptyText('لا توجد طلبات واردة');
+
+        return Column(
+          children: docs.map<Widget>((doc) {
+            final item = doc.data() as Map<String, dynamic>;
+            final otherUserId = (item['userId'] ?? doc.id).toString();
+            final otherName = (item['name'] ?? 'User').toString();
+            final otherImage = (item['image'] ?? '').toString();
+
+            return _userTile(
+              data: item,
+              actions: [
+                IconButton(
+                  tooltip: 'قبول',
+                  onPressed: () async {
+                    await roomService.acceptFriendRequest(
+                      currentUserId: currentUserId,
+                      currentName: currentUserName,
+                      currentImage: currentUserImage,
+                      otherUserId: otherUserId,
+                      otherName: otherName,
+                      otherImage: otherImage,
+                    );
+                  },
+                  icon: const Icon(Icons.check_circle_rounded, color: Colors.greenAccent),
+                ),
+                IconButton(
+                  tooltip: 'رفض',
+                  onPressed: () async {
+                    await roomService.rejectFriendRequest(
+                      currentUserId: currentUserId,
+                      otherUserId: otherUserId,
+                    );
+                  },
+                  icon: const Icon(Icons.cancel_rounded, color: Colors.redAccent),
+                ),
+              ],
+            );
+          }).toList(),
+        );
+      },
+    );
+  }
+
+  Widget _sentRequests() {
+    return StreamBuilder(
+      stream: roomService.sentFriendRequestsStream(userId: currentUserId),
+      builder: (context, snapshot) {
+        final data = snapshot.data as dynamic;
+        final docs = data?.docs ?? [];
+
+        if (docs.isEmpty) return _emptyText('لا توجد طلبات مرسلة');
+
+        return Column(
+          children: docs.map<Widget>((doc) {
+            final item = doc.data() as Map<String, dynamic>;
+            final otherUserId = (item['userId'] ?? doc.id).toString();
+            return _userTile(
+              data: item,
+              actions: [
+                IconButton(
+                  tooltip: 'سحب الطلب',
+                  onPressed: () async {
+                    await roomService.cancelFriendRequest(
+                      fromUserId: currentUserId,
+                      toUserId: otherUserId,
+                    );
+                  },
+                  icon: const Icon(Icons.undo_rounded, color: Colors.orangeAccent),
+                ),
+              ],
+            );
+          }).toList(),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        width: 360,
+        height: double.infinity,
+        padding: const EdgeInsets.fromLTRB(18, 72, 18, 22),
+        decoration: BoxDecoration(
+          color: const Color(0xFF17112F).withOpacity(0.98),
+          border: Border(
+            left: BorderSide(color: Colors.white.withOpacity(0.08)),
+          ),
+        ),
+        child: Directionality(
+          textDirection: TextDirection.rtl,
+          child: DefaultTabController(
+            length: 3,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 24,
+                      backgroundImage: NetworkImage(currentUserImage),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        currentUserName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'قائمة الأصدقاء',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 23,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const TabBar(
+                  labelColor: Colors.white,
+                  unselectedLabelColor: Colors.white54,
+                  indicatorColor: Colors.white,
+                  tabs: [
+                    Tab(text: 'الأصدقاء'),
+                    Tab(text: 'واردة'),
+                    Tab(text: 'مرسلة'),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: TabBarView(
+                    children: [
+                      SingleChildScrollView(child: _friendsList()),
+                      SingleChildScrollView(child: _incomingRequests()),
+                      SingleChildScrollView(child: _sentRequests()),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FriendPanelButton extends StatelessWidget {
+  const _FriendPanelButton({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.07),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withOpacity(0.06)),
+      ),
+      child: ListTile(
+        onTap: onTap,
+        leading: Icon(icon, color: Colors.white, size: 28),
+        title: Text(
+          title,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        subtitle: Text(
+          subtitle,
+          style: const TextStyle(color: Colors.white54),
+        ),
+        trailing: const Icon(
+          Icons.chevron_left_rounded,
+          color: Colors.white54,
+        ),
+      ),
     );
   }
 }
@@ -498,7 +1103,14 @@ class HomeWaveBackgroundPainter extends CustomPainter {
 }
 
 class HomeHeader extends StatelessWidget {
-  const HomeHeader({super.key});
+  const HomeHeader({
+    super.key,
+    required this.onOpenMenu,
+    required this.onOpenFriends,
+  });
+
+  final VoidCallback onOpenMenu;
+  final VoidCallback onOpenFriends;
 
   @override
   Widget build(BuildContext context) {
@@ -507,7 +1119,7 @@ class HomeHeader extends StatelessWidget {
       child: Row(
         children: [
           IconButton(
-            onPressed: () {},
+            onPressed: onOpenMenu,
             icon: const Icon(
               Icons.menu_rounded,
               size: 32,
@@ -525,7 +1137,7 @@ class HomeHeader extends StatelessWidget {
           ),
           const Spacer(),
           IconButton(
-            onPressed: () {},
+            onPressed: onOpenFriends,
             icon: const Icon(
               Icons.people_alt_rounded,
               size: 32,
