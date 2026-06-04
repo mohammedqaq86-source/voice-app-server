@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -56,22 +57,88 @@ class _RoomScreenState extends State<RoomScreen>
   bool isConnectingVoice = false;
 
   bool isMicOn = false;
-  bool isRoomOwner = true;
   bool everyoneCanUseMic = false;
   late bool isPrivateRoom;
 
-  final String currentUserId = 'user_mohammed';
-  final String currentUserName = 'Mohammed';
-  final String currentUserImage = 'https://i.pravatar.cc/150?img=11';
+  User? get firebaseUser => FirebaseAuth.instance.currentUser;
+
+  String get currentUserId => firebaseUser?.uid ?? 'guest_user';
+
+  String get currentUserName {
+    final user = firebaseUser;
+    final displayName = user?.displayName?.trim();
+
+    if (displayName != null && displayName.isNotEmpty) {
+      return displayName;
+    }
+
+    final email = user?.email?.trim();
+
+    if (email != null && email.isNotEmpty) {
+      return email.split('@').first;
+    }
+
+    return 'User';
+  }
+
+  String get currentUserImage {
+    final photoUrl = firebaseUser?.photoURL?.trim();
+
+    if (photoUrl != null && photoUrl.isNotEmpty) {
+      return photoUrl;
+    }
+
+    return 'https://i.pravatar.cc/150?u=$currentUserId';
+  }
+
+  bool get isRoomOwner {
+    final ownerId = widget.room.ownerId.trim();
+
+    if (ownerId.isNotEmpty && ownerId == currentUserId) {
+      return true;
+    }
+
+    // Temporary fallback until ownerId is saved when creating rooms.
+    // This keeps Mohammed as the room leader/admin during testing.
+    return isMohammedLeaderName(currentUserName);
+  }
 
   List<RoomUser> users = [];
   ReplyTarget? replyTarget;
+
+
+  Future<void> ensureCurrentUserIsMember() async {
+    final userId = currentUserId.trim();
+
+    if (userId.isEmpty || userId == 'guest_user') return;
+
+    try {
+      await roomService.joinRoom(
+        roomId: widget.roomId,
+        userId: userId,
+        name: currentUserName,
+        image: currentUserImage,
+        isLeader: isRoomOwner,
+        hasMicPermission: true,
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to join room: $e')),
+      );
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     isPrivateRoom = widget.room.isPrivate;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ensureCurrentUserIsMember();
+    });
 
     backgroundController = AnimationController(
       vsync: this,
@@ -114,17 +181,20 @@ void dispose() {
         userId: currentUserId,
         name: currentUserName,
         image: currentUserImage,
-        role: 'Owner',
+        role: isRoomOwner ? 'Owner' : 'Listener',
         isSpeaker: false,
         hasMicPermission: true,
         isMicOn: false,
-        isLeader: true,
+        isLeader: isRoomOwner,
       ),
     );
   }
 
   bool get hasMicPermission {
-    return currentUser.hasMicPermission || everyoneCanUseMic || isRoomOwner;
+    // Temporary testing mode: allow all room members to use the mic.
+    // Later we can return to:
+    // currentUser.hasMicPermission || everyoneCanUseMic || isRoomOwner
+    return true;
   }
 
   Future<void> confirmExitRoom() async {
@@ -762,8 +832,10 @@ void dispose() {
         'userId': documentId,
     });
 
-    final isLeaderUser =
-        member.isLeader || isMohammedLeaderName(member.name);
+    final isLeaderUser = member.isLeader ||
+        isMohammedLeaderName(member.name) ||
+        (widget.room.ownerId.trim().isNotEmpty &&
+            member.userId == widget.room.ownerId);
 
     return RoomUser(
       userId: member.userId,
@@ -796,22 +868,6 @@ void dispose() {
                   ),
                 )
                 .toList();
-
-            final isStillMember = users.any(
-              (user) => user.userId == currentUser.userId,
-            );
-
-            if (!isStillMember && users.isNotEmpty && mounted && !isRoomOwner) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('You were removed from the room'),
-                  ),
-                );
-
-                Navigator.pop(context);
-              });
-            }
 
             final activeSpeaker = users.where((user) => user.isMicOn).isNotEmpty
                 ? users.firstWhere((user) => user.isMicOn)
