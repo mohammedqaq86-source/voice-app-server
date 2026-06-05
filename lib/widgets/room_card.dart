@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/room.dart';
 import '../screens/room_screen.dart';
@@ -24,12 +25,19 @@ class _RoomCardState extends State<RoomCard> {
 
   bool isLoading = false;
 
-  final String currentUserId = 'user_mohammed';
-  final String currentUserName = 'Mohammed';
-  final String currentUserImage = 'https://i.pravatar.cc/150?img=11';
-
   Future<void> enterRoom() async {
     if (isLoading) return;
+
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please sign in first'),
+        ),
+      );
+      return;
+    }
 
     setState(() {
       isLoading = true;
@@ -38,7 +46,7 @@ class _RoomCardState extends State<RoomCard> {
     try {
       final canEnter = await roomService.canUserEnterRoom(
         roomId: widget.roomId,
-        userId: currentUserId,
+        userId: user.uid,
       );
 
       if (!mounted) return;
@@ -51,17 +59,6 @@ class _RoomCardState extends State<RoomCard> {
         );
         return;
       }
-
-      await roomService.joinRoom(
-        roomId: widget.roomId,
-        userId: currentUserId,
-        name: currentUserName,
-        image: currentUserImage,
-        isLeader: false,
-        hasMicPermission: false,
-      );
-
-      if (!mounted) return;
 
       Navigator.push(
         context,

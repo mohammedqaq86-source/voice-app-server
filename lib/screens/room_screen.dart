@@ -55,6 +55,7 @@ class _RoomScreenState extends State<RoomScreen>
 
   bool isVoiceConnected = false;
   bool isConnectingVoice = false;
+  bool needsAudioPlaybackTap = false;
 
   bool isMicOn = false;
   bool everyoneCanUseMic = false;
@@ -155,8 +156,10 @@ class _RoomScreenState extends State<RoomScreen>
       }
     });
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ensureCurrentUserIsMember();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await ensureCurrentUserIsMember();
+      if (!mounted) return;
+      unawaited(connectVoiceRoom());
     });
 
     backgroundController = AnimationController(
@@ -385,19 +388,6 @@ void dispose() {
   Future<void> connectVoiceRoom() async {
     if (isVoiceConnected || isConnectingVoice) return;
 
-    if (!kIsWeb) {
-      final micPermission = await Permission.microphone.request();
-
-      if (!micPermission.isGranted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Microphone permission is required'),
-          ),
-        );
-        return;
-      }
-    }
-
     setState(() {
       isConnectingVoice = true;
     });
@@ -411,6 +401,7 @@ void dispose() {
       );
 
       await liveKitRoom.localParticipant?.setMicrophoneEnabled(false);
+      await startAudioPlayback();
 
       if (!mounted) return;
 
@@ -432,6 +423,24 @@ void dispose() {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to connect voice: $e')),
       );
+    }
+  }
+
+  Future<void> startAudioPlayback() async {
+    try {
+      await liveKitRoom.startAudio();
+
+      if (!mounted) return;
+
+      setState(() {
+        needsAudioPlaybackTap = !liveKitRoom.canPlaybackAudio;
+      });
+    } catch (_) {
+      if (!mounted) return;
+
+      setState(() {
+        needsAudioPlaybackTap = true;
+      });
     }
   }
 
@@ -481,6 +490,7 @@ void dispose() {
     setState(() {
       isVoiceConnected = false;
       isMicOn = false;
+      needsAudioPlaybackTap = false;
     });
   }
 
@@ -492,11 +502,26 @@ void dispose() {
       return;
     }
 
+    final previousMicState = isMicOn;
+    final newMicState = !isMicOn;
+
+    if (newMicState && !kIsWeb) {
+      final micPermission = await Permission.microphone.request();
+
+      if (!micPermission.isGranted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Microphone permission is required'),
+          ),
+        );
+        return;
+      }
+    }
+
     await connectVoiceRoom();
     if (!isVoiceConnected) return;
 
-    final previousMicState = isMicOn;
-    final newMicState = !isMicOn;
+    await startAudioPlayback();
 
     setState(() {
       isMicOn = newMicState;
@@ -1211,6 +1236,26 @@ void dispose() {
                         ],
                       ),
                     ),
+                    if (needsAudioPlaybackTap)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+                        child: SizedBox(
+                          width: double.infinity,
+                          height: 44,
+                          child: ElevatedButton.icon(
+                            onPressed: startAudioPlayback,
+                            icon: const Icon(Icons.volume_up_rounded),
+                            label: const Text('Play voice'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.white,
+                              foregroundColor: Colors.black,
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     Container(
                       height: 200,
                       margin: const EdgeInsets.symmetric(horizontal: 14),
