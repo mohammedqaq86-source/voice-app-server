@@ -1,8 +1,42 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class RoomService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  Future<void> sendNotification({
+    required String toUserId,
+    required String type,
+    required String title,
+    required String body,
+    required String fromUserId,
+    required String fromName,
+    required String fromImage,
+    String? roomId,
+    String? roomTitle,
+  }) async {
+    if (toUserId.isEmpty || toUserId == fromUserId) return;
+    try {
+      await _firestore
+          .collection('users')
+          .doc(toUserId)
+          .collection('notifications')
+          .add({
+        'type': type,
+        'title': title,
+        'body': body,
+        'fromUserId': fromUserId,
+        'fromName': fromName,
+        'fromImage': fromImage,
+        if (roomId != null) 'roomId': roomId,
+        if (roomTitle != null) 'roomTitle': roomTitle,
+        'isRead': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {}
+  }
 
   Future<String> createRoom({
     required String title,
@@ -258,11 +292,14 @@ class RoomService {
     final roomDoc = await roomRef.get();
     if (!roomDoc.exists) return;
 
-    await cleanupLegacyRoomMembers(roomId: roomId);
-
     final roomData = roomDoc.data() ?? <String, dynamic>{};
     final ownerId = (roomData['ownerId'] ?? '').toString();
     final isOwner = ownerId.isNotEmpty && ownerId == userId;
+
+    // Only the room owner has permission to delete other members' docs
+    if (isOwner) {
+      await cleanupLegacyRoomMembers(roomId: roomId);
+    }
 
     final kickedDoc = await roomRef.collection('kickedUsers').doc(userId).get();
     final inviteDoc = await roomRef.collection('invites').doc(userId).get();
@@ -274,17 +311,22 @@ class RoomService {
     final batch = _firestore.batch();
 
     final memberRef = roomRef.collection('members').doc(userId);
-    batch.set(memberRef, {
+    // For non-owners, exclude hasMicPermission so re-joining doesn't reset
+    // any mic permission the room owner previously granted them.
+    final memberData = <String, dynamic>{
       'userId': userId,
       'name': name,
       'image': image,
       'isLeader': isOwner,
       'isOnline': true,
-      'hasMicPermission': isOwner || hasMicPermission,
       'isMicOn': false,
       'joinedAt': FieldValue.serverTimestamp(),
       'lastSeen': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    };
+    if (isOwner || hasMicPermission) {
+      memberData['hasMicPermission'] = true;
+    }
+    batch.set(memberRef, memberData, SetOptions(merge: true));
 
     if (inviteDoc.exists) {
       batch.delete(roomRef.collection('kickedUsers').doc(userId));
@@ -293,8 +335,13 @@ class RoomService {
     }
 
     await batch.commit();
-    await ensureSingleLeader(roomId: roomId);
-    await updateRoomCounts(roomId: roomId);
+
+    // Only the owner can update all members' isLeader fields
+    if (isOwner) {
+      await ensureSingleLeader(roomId: roomId);
+    }
+
+    await updateRoomCounts(roomId: roomId, isOwner: isOwner);
 
     await sendSystemMessage(
       roomId: roomId,
@@ -320,7 +367,7 @@ class RoomService {
 
     final memberDoc = await memberRef.get();
     if (!memberDoc.exists) {
-      await updateRoomCounts(roomId: roomId);
+      await updateRoomCounts(roomId: roomId, isOwner: false);
       return;
     }
 
@@ -331,7 +378,7 @@ class RoomService {
     });
 
     await memberRef.delete();
-    await updateRoomCounts(roomId: roomId);
+    await updateRoomCounts(roomId: roomId, isOwner: false);
   }
 
   Future<void> ensureSingleLeader({required String roomId}) async {
@@ -356,8 +403,11 @@ class RoomService {
     await batch.commit();
   }
 
-  Future<void> updateRoomCounts({required String roomId}) async {
-    await cleanupLegacyRoomMembers(roomId: roomId);
+  Future<void> updateRoomCounts({required String roomId, bool isOwner = false}) async {
+    // Only the room owner can delete legacy bot docs
+    if (isOwner) {
+      await cleanupLegacyRoomMembers(roomId: roomId);
+    }
 
     final membersSnapshot = await _firestore
         .collection('rooms')
@@ -397,18 +447,13 @@ class RoomService {
         .collection('members')
         .doc(userId);
 
-    final memberDoc = await memberRef.get();
-    if (!memberDoc.exists) {
-      throw Exception('Room member not found');
-    }
-
-    await memberRef.update({
+    await memberRef.set({
       'hasMicPermission': hasMicPermission,
       if (!hasMicPermission) 'isMicOn': false,
       'lastSeen': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true));
 
-    await updateRoomCounts(roomId: roomId);
+    await updateRoomCounts(roomId: roomId, isOwner: true);
   }
 
   Future<void> updateMicState({
@@ -422,15 +467,12 @@ class RoomService {
         .collection('members')
         .doc(userId);
 
-    final memberDoc = await memberRef.get();
-    if (!memberDoc.exists) return;
-
-    await memberRef.update({
+    await memberRef.set({
       'isMicOn': isMicOn,
       'lastSeen': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true));
 
-    await updateRoomCounts(roomId: roomId);
+    await updateRoomCounts(roomId: roomId, isOwner: false);
   }
 
   Future<void> kickUser({
@@ -458,7 +500,7 @@ class RoomService {
     });
 
     await batch.commit();
-    await updateRoomCounts(roomId: roomId);
+    await updateRoomCounts(roomId: roomId, isOwner: true);
 
     await sendSystemMessage(
       roomId: roomId,
@@ -553,7 +595,7 @@ class RoomService {
     }
 
     await batch.commit();
-    await updateRoomCounts(roomId: roomId);
+    await updateRoomCounts(roomId: roomId, isOwner: true);
 
     await sendSystemMessage(
       roomId: roomId,
@@ -723,6 +765,16 @@ class RoomService {
     });
 
     await batch.commit();
+
+    unawaited(sendNotification(
+      toUserId: toUserId,
+      type: 'friendRequest',
+      title: 'طلب صداقة جديد',
+      body: '$fromName أرسل لك طلب صداقة',
+      fromUserId: fromUserId,
+      fromName: fromName,
+      fromImage: fromImage,
+    ));
   }
 
   Future<void> cancelFriendRequest({
@@ -772,6 +824,16 @@ class RoomService {
     }, SetOptions(merge: true));
 
     await batch.commit();
+
+    unawaited(sendNotification(
+      toUserId: otherUserId,
+      type: 'friendAccepted',
+      title: 'قبول طلب الصداقة',
+      body: '$currentName قبل طلب صداقتك',
+      fromUserId: currentUserId,
+      fromName: currentName,
+      fromImage: currentImage,
+    ));
   }
 
   Future<void> removeFriend({

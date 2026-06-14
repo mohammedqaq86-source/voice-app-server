@@ -16,28 +16,39 @@ service cloud.firestore {
         get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerId == request.auth.uid;
     }
 
+    // Fields that only the room owner may set on a member doc
+    function touchesSensitiveFields() {
+      return request.resource.data.diff(resource.data)
+        .affectedKeys()
+        .hasAny(['isLeader', 'hasMicPermission']);
+    }
+
     // ─── Users ───────────────────────────────────────────────────────────────
     match /users/{userId} {
       allow read: if isSignedIn();
       allow write: if isOwner(userId);
 
-      // socialLinks: the owner of the doc OR the linked user (linkId) can write.
-      // This allows friend-request writes where the sender writes into the
-      // recipient's socialLinks doc whose document ID equals the sender's UID.
+      // socialLinks: owner of the doc OR the linked user can write.
       match /socialLinks/{linkId} {
         allow read:   if isOwner(userId);
         allow write:  if isOwner(userId) || isOwner(linkId);
         allow delete: if isOwner(userId) || isOwner(linkId);
       }
 
-      // Invites stored under the user: readable only by the user, writable by
-      // anyone signed in (so room owners can send/revoke invites), deletable
-      // by the user themselves or by the room owner when kicking.
+      // Invites stored under the user
       match /invites/{roomId} {
         allow read:   if isOwner(userId);
         allow create: if isSignedIn();
         allow update: if isSignedIn();
         allow delete: if isOwner(userId) || isRoomOwner(roomId);
+      }
+
+      // Notifications: anyone signed in can push one to you, only you can read/manage
+      match /notifications/{notifId} {
+        allow read:   if isOwner(userId);
+        allow create: if isSignedIn();
+        allow update: if isOwner(userId);
+        allow delete: if isOwner(userId);
       }
     }
 
@@ -45,25 +56,32 @@ service cloud.firestore {
     match /rooms/{roomId} {
       allow read:   if isSignedIn();
       allow create: if isSignedIn();
-      allow update: if isSignedIn() && isRoomOwner(roomId);
+      // Room owner can update anything; others can only touch usersCount/speakersCount
+      allow update: if isSignedIn() && (
+        isRoomOwner(roomId) ||
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['usersCount', 'speakersCount'])
+      );
       allow delete: if isRoomOwner(roomId);
 
-      // Members: the member themselves OR the room owner can write/delete.
-      // This is the critical rule that allows give-mic, remove-mic, and kick.
+      // Members: room owner has full control.
+      // Members may update their own doc but CANNOT elevate their own privileges.
       match /members/{memberId} {
         allow read:   if isSignedIn();
-        allow write:  if isOwner(memberId) || isRoomOwner(roomId);
+        allow create: if isOwner(memberId) || isRoomOwner(roomId);
+        allow update: if isRoomOwner(roomId)
+                      || (isOwner(memberId) && !touchesSensitiveFields());
         allow delete: if isOwner(memberId) || isRoomOwner(roomId);
       }
 
-      // Kicked users: only the room owner can manage this list.
+      // Kicked users: only the room owner can manage this list
       match /kickedUsers/{userId} {
         allow read:   if isSignedIn();
         allow write:  if isRoomOwner(roomId);
         allow delete: if isRoomOwner(roomId);
       }
 
-      // Room-level invites: owner can send/revoke; the invited user can read/delete their own.
+      // Room-level invites: owner sends/revokes; invited user can read/delete their own
       match /invites/{userId} {
         allow read:   if isOwner(userId) || isRoomOwner(roomId);
         allow create: if isRoomOwner(roomId);
@@ -71,10 +89,15 @@ service cloud.firestore {
         allow delete: if isOwner(userId) || isRoomOwner(roomId);
       }
 
-      // Chat messages: any signed-in user in the room can read/write.
+      // Chat messages: any signed-in user can read and write (system + regular)
       match /messages/{messageId} {
-        allow read:  if isSignedIn();
-        allow write: if isSignedIn();
+        allow read:   if isSignedIn();
+        allow create: if isSignedIn() && (
+          request.resource.data.type == 'system' ||
+          request.resource.data.userId == request.auth.uid
+        );
+        allow update: if isRoomOwner(roomId);
+        allow delete: if isRoomOwner(roomId);
       }
     }
   }

@@ -3,9 +3,12 @@ import 'dart:math' as math;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/room.dart';
+import '../services/notification_service.dart';
 import '../services/room_service.dart';
 import '../widgets/room_card.dart';
 import '../widgets/search_box.dart';
+import 'friends_screen.dart';
+import 'notifications_screen.dart';
 import 'room_screen.dart';
 import 'source_picker_screen.dart';
 import 'youtube_picker_screen.dart';
@@ -20,6 +23,7 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   final RoomService roomService = RoomService();
+  final NotificationService notificationService = NotificationService();
   late final AnimationController backgroundController;
 
   User? get firebaseUser => FirebaseAuth.instance.currentUser;
@@ -167,6 +171,28 @@ class _HomeScreenState extends State<HomeScreen>
           child: child,
         );
       },
+    );
+  }
+
+  void openFriendsScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => FriendsScreen(
+          currentUserId: currentUserId,
+          currentUserName: currentUserName,
+          currentUserImage: currentUserImage,
+        ),
+      ),
+    );
+  }
+
+  void openNotificationsScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => NotificationsScreen(userId: currentUserId),
+      ),
     );
   }
 
@@ -387,7 +413,10 @@ class _HomeScreenState extends State<HomeScreen>
                 children: [
                   HomeHeader(
                     onOpenMenu: openFriendsPanel,
-                    onOpenFriends: openFriendsPanel,
+                    onOpenFriends: openFriendsScreen,
+                    onOpenNotifications: openNotificationsScreen,
+                    notificationService: notificationService,
+                    currentUserId: currentUserId,
                   ),
                   const SearchBox(),
                   InvitedRoomsSection(
@@ -1107,10 +1136,16 @@ class HomeHeader extends StatelessWidget {
     super.key,
     required this.onOpenMenu,
     required this.onOpenFriends,
+    required this.onOpenNotifications,
+    required this.notificationService,
+    required this.currentUserId,
   });
 
   final VoidCallback onOpenMenu;
   final VoidCallback onOpenFriends;
+  final VoidCallback onOpenNotifications;
+  final NotificationService notificationService;
+  final String currentUserId;
 
   @override
   Widget build(BuildContext context) {
@@ -1136,6 +1171,45 @@ class HomeHeader extends StatelessWidget {
             ),
           ),
           const Spacer(),
+          StreamBuilder<int>(
+            stream: notificationService.unreadCountStream(currentUserId),
+            builder: (context, snapshot) {
+              final count = snapshot.data ?? 0;
+              return Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  IconButton(
+                    onPressed: onOpenNotifications,
+                    icon: const Icon(
+                      Icons.notifications_rounded,
+                      size: 30,
+                      color: Colors.white,
+                    ),
+                  ),
+                  if (count > 0)
+                    Positioned(
+                      top: 6,
+                      right: 6,
+                      child: Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: const BoxDecoration(
+                          color: Colors.redAccent,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Text(
+                          count > 99 ? '99+' : '$count',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
           IconButton(
             onPressed: onOpenFriends,
             icon: const Icon(

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -63,7 +64,12 @@ class _RoomScreenState extends State<RoomScreen>
   bool hasHandledRoomRemoval = false;
   bool _confirmedMembership = false;
   bool everyoneCanUseMic = false;
+  bool _showUsersPanel = false;
+
+  bool _lastKnownMicPermission = false;
+  bool _micPermissionInitialized = false;
   late bool isPrivateRoom;
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _membersPanelStream;
   StreamSubscription<dynamic>? roomSubscription;
   String currentOwnerId = '';
   String currentOwnerName = '';
@@ -146,6 +152,7 @@ class _RoomScreenState extends State<RoomScreen>
     currentOwnerId = widget.room.ownerId;
     currentOwnerName = widget.room.ownerName;
     currentOwnerImage = widget.room.ownerImage;
+    _membersPanelStream = roomService.membersStream(widget.roomId);
 
     roomSubscription = roomService.roomStream(widget.roomId).listen((snapshot) {
       final data = snapshot.data();
@@ -511,7 +518,7 @@ class _RoomScreenState extends State<RoomScreen>
   Future<void> toggleMic() async {
     if (!hasMicPermission) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You do not have mic permission')),
+        const SnackBar(content: Text('ليس لديك صلاحية الميكروفون')),
       );
       return;
     }
@@ -523,29 +530,40 @@ class _RoomScreenState extends State<RoomScreen>
       final micPermission = await Permission.microphone.request();
 
       if (!micPermission.isGranted) {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Microphone permission is required'),
-          ),
+          const SnackBar(content: Text('صلاحية الميكروفون مطلوبة')),
         );
         return;
       }
     }
 
-    await connectVoiceRoom();
-    if (!isVoiceConnected) return;
-
-    await startAudioPlayback();
-
+    // Optimistic update — UI responds immediately
     setState(() {
       isMicOn = newMicState;
     });
-
     unawaited(roomService.updateMicState(
       roomId: widget.roomId,
       userId: currentUserId,
       isMicOn: newMicState,
     ));
+
+    await connectVoiceRoom();
+
+    if (!isVoiceConnected) {
+      if (!mounted) return;
+      setState(() {
+        isMicOn = previousMicState;
+      });
+      unawaited(roomService.updateMicState(
+        roomId: widget.roomId,
+        userId: currentUserId,
+        isMicOn: previousMicState,
+      ));
+      return;
+    }
+
+    await startAudioPlayback();
 
     try {
       await liveKitRoom.localParticipant?.setMicrophoneEnabled(newMicState);
@@ -555,7 +573,6 @@ class _RoomScreenState extends State<RoomScreen>
       setState(() {
         isMicOn = previousMicState;
       });
-
       unawaited(roomService.updateMicState(
         roomId: widget.roomId,
         userId: currentUserId,
@@ -563,7 +580,7 @@ class _RoomScreenState extends State<RoomScreen>
       ));
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to update microphone: $e')),
+        SnackBar(content: Text('فشل تشغيل الميكروفون: $e')),
       );
     }
   }
@@ -741,6 +758,17 @@ class _RoomScreenState extends State<RoomScreen>
         newOwnerImage: user.image,
       );
 
+      unawaited(roomService.sendNotification(
+        toUserId: user.userId,
+        type: 'leaderTransferred',
+        title: 'أنت الليدر الجديد 👑',
+        body: '$currentUserName نقل إليك قيادة الروم',
+        fromUserId: currentUserId,
+        fromName: currentUserName,
+        fromImage: currentUserImage,
+        roomId: widget.roomId,
+      ));
+
       if (!mounted) return;
       setState(() {
         currentOwnerId = user.userId;
@@ -748,12 +776,12 @@ class _RoomScreenState extends State<RoomScreen>
         currentOwnerImage = user.image;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${user.name} is now the room leader')),
+        SnackBar(content: Text('${user.name} أصبح ليدر الروم')),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to transfer leader: $e')),
+        SnackBar(content: Text('فشل نقل القيادة: $e')),
       );
     }
   }
@@ -884,13 +912,26 @@ class _RoomScreenState extends State<RoomScreen>
       unawaited(roomService.sendSystemMessage(
         roomId: widget.roomId,
         text: newPermission
-            ? '${user.name} got the mic'
-            : 'Mic removed from ${user.name}',
+            ? '${user.name} حصل على الميكروفون'
+            : 'تم سحب الميكروفون من ${user.name}',
         userId: user.userId,
         name: user.name,
         image: user.image,
         isLeader: user.isLeader,
         icon: newPermission ? Icons.mic_rounded : Icons.mic_off_rounded,
+      ));
+
+      unawaited(roomService.sendNotification(
+        toUserId: user.userId,
+        type: newPermission ? 'micGranted' : 'micRevoked',
+        title: newPermission ? 'تم منحك الميكروفون 🎙️' : 'تم سحب الميكروفون',
+        body: newPermission
+            ? '$currentUserName منحك صلاحية استخدام الميكروفون'
+            : '$currentUserName سحب صلاحية الميكروفون منك',
+        fromUserId: currentUserId,
+        fromName: currentUserName,
+        fromImage: currentUserImage,
+        roomId: widget.roomId,
       ));
     } catch (e) {
       if (!mounted) return;
@@ -933,138 +974,125 @@ class _RoomScreenState extends State<RoomScreen>
         image: user.image,
       );
 
+      unawaited(roomService.sendNotification(
+        toUserId: user.userId,
+        type: 'kicked',
+        title: 'تم طردك من الروم',
+        body: '$currentUserName قام بطردك من الروم',
+        fromUserId: currentUserId,
+        fromName: currentUserName,
+        fromImage: currentUserImage,
+        roomId: widget.roomId,
+      ));
+
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${user.name} can only rejoin by invitation')),
+        SnackBar(content: Text('${user.name} تم طرده من الروم')),
       );
     } catch (e) {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to kick user: $e')),
+        SnackBar(content: Text('فشل الطرد: $e')),
       );
     }
   }
 
   void showRoomUsers() {
-    showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: 'room-users',
-      barrierColor: Colors.black.withOpacity(0.35),
-      transitionDuration: const Duration(milliseconds: 260),
-      pageBuilder: (context, animation, secondaryAnimation) {
-        return Align(
-          alignment: Alignment.centerLeft,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {},
-            child: Material(
-              color: Colors.transparent,
-              child: Container(
-                width: 330,
-                height: double.infinity,
-                padding: const EdgeInsets.fromLTRB(18, 90, 18, 20),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.34),
-                  border: Border(
-                    right: BorderSide(color: Colors.white.withOpacity(0.08)),
-                  ),
-                ),
-              child: Directionality(
-                textDirection: TextDirection.ltr,
-                child: StreamBuilder(
-                  stream: roomService.membersStream(widget.roomId),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(
-                        child: CircularProgressIndicator(color: Colors.white),
-                      );
-                    }
+    setState(() => _showUsersPanel = true);
+  }
 
-                    if (snapshot.hasError) {
-                      return Center(
-                        child: Text(
-                          'Error: ${snapshot.error}',
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      );
-                    }
-
-                    final docs = snapshot.data?.docs ?? [];
-                    final roomUsers = docs
-                        .map(
-                          (doc) => roomUserFromFirestore(
-                            doc.data(),
-                            documentId: doc.id,
-                          ),
-                        )
-                        .toList()
-                      ..sort((a, b) {
-                        if (a.isLeader != b.isLeader) return a.isLeader ? -1 : 1;
-                        if (a.isMicOn != b.isMicOn) return a.isMicOn ? -1 : 1;
-                        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-                      });
-
-                    if (roomUsers.isEmpty) {
-                      return const Center(
-                        child: Text(
-                          'No users',
-                          style: TextStyle(color: Colors.white54),
-                        ),
-                      );
-                    }
-
-                    return ListView.builder(
-                      itemCount: roomUsers.length,
-                      itemBuilder: (context, index) {
-                        final user = roomUsers[index];
-
-                        final isCurrentUserLeader = roomUsers.any(
-                          (item) =>
-                              item.userId.trim() == currentUserId.trim() &&
-                              item.isLeader,
-                        );
-
-                        return RoomUserTile(
-                          user: user,
-                          isAdmin: isRoomOwner || isCurrentUserLeader,
-                          currentUserId: currentUserId,
-                          currentUserName: currentUserName,
-                          currentUserImage: currentUserImage,
-                          roomService: roomService,
-                          onToggleMicPermission: () {
-                            toggleUserMicPermission(user);
-                          },
-                          onKick: () {
-                            unawaited(kickUser(user));
-                          },
-                          onMakeLeader: () {
-                            unawaited(makeUserLeader(user));
-                          },
-                        );
-                      },
-                    );
-                  },
-                ),
-              ),
-            ),
+  Widget _buildUsersPanel() {
+    return GestureDetector(
+      onTap: () {},
+      child: Container(
+        width: 330,
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.88),
+          border: Border(
+            right: BorderSide(color: Colors.white.withOpacity(0.10)),
           ),
         ),
-      );
-      },
-      transitionBuilder: (context, animation, secondaryAnimation, child) {
-        return SlideTransition(
-          position: Tween<Offset>(
-            begin: const Offset(-1, 0),
-            end: Offset.zero,
-          ).animate(
-            CurvedAnimation(parent: animation, curve: Curves.easeOut),
+        padding: const EdgeInsets.fromLTRB(18, 90, 18, 20),
+        child: Directionality(
+          textDirection: TextDirection.ltr,
+          child: StreamBuilder(
+            stream: _membersPanelStream,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(
+                  child: CircularProgressIndicator(color: Colors.white),
+                );
+              }
+
+              if (snapshot.hasError) {
+                return Center(
+                  child: Text(
+                    'Error: ${snapshot.error}',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                );
+              }
+
+              final docs = snapshot.data?.docs ?? [];
+              final roomUsers = docs
+                  .map(
+                    (doc) => roomUserFromFirestore(
+                      doc.data(),
+                      documentId: doc.id,
+                    ),
+                  )
+                  .toList()
+                ..sort((a, b) {
+                  if (a.isLeader != b.isLeader) return a.isLeader ? -1 : 1;
+                  if (a.isMicOn != b.isMicOn) return a.isMicOn ? -1 : 1;
+                  return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+                });
+
+              if (roomUsers.isEmpty) {
+                return const Center(
+                  child: Text(
+                    'No users',
+                    style: TextStyle(color: Colors.white54),
+                  ),
+                );
+              }
+
+              return ListView.builder(
+                itemCount: roomUsers.length,
+                itemBuilder: (context, index) {
+                  final user = roomUsers[index];
+
+                  final isCurrentUserLeader = roomUsers.any(
+                    (item) =>
+                        item.userId.trim() == currentUserId.trim() &&
+                        item.isLeader,
+                  );
+
+                  return RoomUserTile(
+                    user: user,
+                    isAdmin: isRoomOwner || isCurrentUserLeader,
+                    currentUserId: currentUserId,
+                    currentUserName: currentUserName,
+                    currentUserImage: currentUserImage,
+                    roomService: roomService,
+                    onToggleMicPermission: () {
+                      toggleUserMicPermission(user);
+                    },
+                    onKick: () {
+                      unawaited(kickUser(user));
+                    },
+                    onMakeLeader: () {
+                      unawaited(makeUserLeader(user));
+                    },
+                  );
+                },
+              );
+            },
           ),
-          child: child,
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -1177,8 +1205,6 @@ class _RoomScreenState extends State<RoomScreen>
     );
 
     if (currentIndex == -1) {
-      // Only trigger removal if we've previously confirmed membership via stream
-      // (prevents false positive from race between hasJoinedRoom and stream update)
       if (_confirmedMembership && !isLeavingRoom && !hasHandledRoomRemoval) {
         hasHandledRoomRemoval = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1190,7 +1216,44 @@ class _RoomScreenState extends State<RoomScreen>
 
     _confirmedMembership = true;
     final member = roomUsers[currentIndex];
-    final shouldForceMicOff = !member.hasMicPermission && isMicOn;
+
+    // Track mic permission changes and notify the user
+    final newPermission = member.hasMicPermission || isRoomOwner;
+    if (_micPermissionInitialized && newPermission != _lastKnownMicPermission) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (newPermission) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Row(children: [
+                Icon(Icons.mic_rounded, color: Colors.white),
+                SizedBox(width: 8),
+                Text('تم منحك صلاحية الميكروفون'),
+              ]),
+              backgroundColor: Colors.green.shade700,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        } else {
+          isMicOn = false;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Row(children: [
+                Icon(Icons.mic_off_rounded, color: Colors.white),
+                SizedBox(width: 8),
+                Text('تم سحب صلاحية الميكروفون'),
+              ]),
+              backgroundColor: Colors.red.shade700,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      });
+    }
+    _lastKnownMicPermission = newPermission;
+    _micPermissionInitialized = true;
+
+    final shouldForceMicOff = !member.hasMicPermission && !isRoomOwner && isMicOn;
 
     if (shouldForceMicOff) {
       isMicOn = false;
@@ -1227,7 +1290,12 @@ class _RoomScreenState extends State<RoomScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Directionality(
+    return PopScope<Object?>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(confirmExitRoom());
+      },
+      child: Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
         backgroundColor: Colors.transparent,
@@ -1271,8 +1339,10 @@ class _RoomScreenState extends State<RoomScreen>
 
             return AnimatedWaveRoomBackground(
               controller: backgroundController,
-              child: SafeArea(
-                child: Column(
+              child: Stack(
+                children: [
+                  SafeArea(
+                    child: Column(
                   children: [
                     Container(
                       height: 78,
@@ -1567,10 +1637,29 @@ class _RoomScreenState extends State<RoomScreen>
                   ],
                 ),
               ),
-            );
+              if (_showUsersPanel)
+                Positioned.fill(
+                  child: GestureDetector(
+                    onTap: () => setState(() => _showUsersPanel = false),
+                    child: Container(color: Colors.black.withOpacity(0.35)),
+                  ),
+                ),
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOut,
+                left: _showUsersPanel ? 0 : -330,
+                top: 0,
+                bottom: 0,
+                width: 330,
+                child: _buildUsersPanel(),
+              ),
+            ],
+          ),
+        );
           },
         ),
       ),
+    ),
     );
   }
 }
