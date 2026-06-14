@@ -58,6 +58,10 @@ class _RoomScreenState extends State<RoomScreen>
   bool needsAudioPlaybackTap = false;
 
   bool isMicOn = false;
+  bool hasJoinedRoom = false;
+  bool isLeavingRoom = false;
+  bool hasHandledRoomRemoval = false;
+  bool _confirmedMembership = false;
   bool everyoneCanUseMic = false;
   late bool isPrivateRoom;
   StreamSubscription<dynamic>? roomSubscription;
@@ -101,6 +105,10 @@ class _RoomScreenState extends State<RoomScreen>
     return ownerId.isNotEmpty && ownerId == currentUserId;
   }
 
+  bool get canManageRoom {
+    return isRoomOwner || currentUser.isLeader;
+  }
+
   List<RoomUser> users = [];
   ReplyTarget? replyTarget;
 
@@ -119,6 +127,8 @@ class _RoomScreenState extends State<RoomScreen>
         isLeader: isRoomOwner,
         hasMicPermission: isRoomOwner,
       );
+
+      hasJoinedRoom = true;
     } catch (e) {
       if (!mounted) return;
 
@@ -177,25 +187,27 @@ class _RoomScreenState extends State<RoomScreen>
   }
 
   @override
-void dispose() {
-  backgroundController.dispose();
-  youtubeController.dispose();
-  chatController.dispose();
-  chatScrollController.dispose();
+  void dispose() {
+    backgroundController.dispose();
+    youtubeController.dispose();
+    chatController.dispose();
+    chatScrollController.dispose();
 
-  WidgetsBinding.instance.removeObserver(this);
+    WidgetsBinding.instance.removeObserver(this);
 
-  roomSubscription?.cancel();
-  speakingMonitorTimer?.cancel();
-  liveKitRoom.disconnect();
+    roomSubscription?.cancel();
+    speakingMonitorTimer?.cancel();
+    liveKitRoom.disconnect();
 
-  roomService.leaveRoom(
-    roomId: widget.roomId,
-    userId: currentUserId,
-  );
+    if (!isLeavingRoom && currentUserId != 'guest_user') {
+      unawaited(roomService.leaveRoom(
+        roomId: widget.roomId,
+        userId: currentUserId,
+      ));
+    }
 
-  super.dispose();
-}
+    super.dispose();
+  }
 
   RoomUser get currentUser {
     return users.firstWhere(
@@ -241,13 +253,15 @@ void dispose() {
 
     if (shouldExit != true || !mounted) return;
 
-    Navigator.pop(context);
-
+    isLeavingRoom = true;
     unawaited(disconnectVoiceRoom());
-    unawaited(roomService.leaveRoom(
+    await roomService.leaveRoom(
       roomId: widget.roomId,
       userId: currentUserId,
-    ));
+    );
+
+    if (!mounted) return;
+    Navigator.pop(context);
   }
 
   void scrollChatToBottom() {
@@ -555,7 +569,7 @@ void dispose() {
   }
 
   void sendInvite() {
-    final canInvite = !isPrivateRoom || isRoomOwner;
+    final canInvite = !isPrivateRoom || canManageRoom;
 
     if (!canInvite) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -683,7 +697,7 @@ void dispose() {
                     showFriendsList();
                   },
                 ),
-                if (isRoomOwner)
+                if (canManageRoom)
                   ListTile(
                     leading: const Icon(
                       Icons.settings_rounded,
@@ -710,7 +724,13 @@ void dispose() {
   }
 
   Future<void> makeUserLeader(RoomUser user) async {
-    if (!isRoomOwner || user.userId == currentUserId) return;
+    if (!canManageRoom) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Only the room owner can assign leaders')),
+      );
+      return;
+    }
+    if (user.userId == currentUserId) return;
 
     try {
       await roomService.transferRoomLeadership(
@@ -739,7 +759,7 @@ void dispose() {
   }
 
   void openRoomSettings() {
-    if (!isRoomOwner) {
+    if (!canManageRoom) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Only the room leader can open settings')),
       );
@@ -827,7 +847,7 @@ void dispose() {
   }
 
   Future<void> toggleUserMicPermission(RoomUser user) async {
-    if (!isRoomOwner) {
+    if (!canManageRoom) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Only the room owner can control mic')),
       );
@@ -893,7 +913,13 @@ void dispose() {
   }
 
   Future<void> kickUser(RoomUser user) async {
-    if (!isRoomOwner || user.userId == currentUserId) return;
+    if (!canManageRoom) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Only the room owner can kick users')),
+      );
+      return;
+    }
+    if (user.userId == currentUserId) return;
 
     setState(() {
       users = users.where((item) => item.userId != user.userId).toList();
@@ -971,7 +997,12 @@ void dispose() {
                             documentId: doc.id,
                           ),
                         )
-                        .toList();
+                        .toList()
+                      ..sort((a, b) {
+                        if (a.isLeader != b.isLeader) return a.isLeader ? -1 : 1;
+                        if (a.isMicOn != b.isMicOn) return a.isMicOn ? -1 : 1;
+                        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+                      });
 
                     if (roomUsers.isEmpty) {
                       return const Center(
@@ -987,9 +1018,15 @@ void dispose() {
                       itemBuilder: (context, index) {
                         final user = roomUsers[index];
 
+                        final isCurrentUserLeader = roomUsers.any(
+                          (item) =>
+                              item.userId.trim() == currentUserId.trim() &&
+                              item.isLeader,
+                        );
+
                         return RoomUserTile(
                           user: user,
-                          isAdmin: isRoomOwner,
+                          isAdmin: isRoomOwner || isCurrentUserLeader,
                           currentUserId: currentUserId,
                           currentUserName: currentUserName,
                           currentUserImage: currentUserImage,
@@ -1103,27 +1140,85 @@ void dispose() {
     Map<String, dynamic> data, {
     String documentId = '',
   }) {
+    final canonicalUserId = documentId.trim().isNotEmpty
+        ? documentId.trim()
+        : (data['userId'] ?? '').toString().trim();
+
     final member = RoomMemberModel.fromMap({
       ...data,
-      if ((data['userId'] ?? '').toString().trim().isEmpty)
-        'userId': documentId,
+      'userId': canonicalUserId,
     });
 
-    final isLeaderUser =
-        currentOwnerId.trim().isNotEmpty &&
-        member.userId == currentOwnerId;
+    final isLeaderUser = data['isLeader'] == true ||
+        (currentOwnerId.trim().isNotEmpty &&
+            canonicalUserId == currentOwnerId.trim());
 
     return RoomUser(
-      userId: member.userId,
+      userId: canonicalUserId,
       name: member.name.isEmpty ? 'User' : member.name,
       image: member.image.isEmpty ? 'https://i.pravatar.cc/150' : member.image,
       role: isLeaderUser ? 'Owner' : 'Listener',
       countryFlag: countryFlagFromData(data),
-      isSpeaker: speakingUserIds.contains(member.userId),
+      isSpeaker: speakingUserIds.contains(canonicalUserId),
       hasMicPermission: member.hasMicPermission || isLeaderUser,
       isMicOn: member.isMicOn,
       isLeader: isLeaderUser,
     );
+  }
+
+  void syncCurrentUserFromMembers(List<RoomUser> roomUsers) {
+    final signedInUserId = currentUserId.trim();
+    final currentIndex = roomUsers.indexWhere(
+      (user) => user.userId.trim() == signedInUserId,
+    );
+
+    if (currentIndex == -1) {
+      // Only trigger removal if we've previously confirmed membership via stream
+      // (prevents false positive from race between hasJoinedRoom and stream update)
+      if (_confirmedMembership && !isLeavingRoom && !hasHandledRoomRemoval) {
+        hasHandledRoomRemoval = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          unawaited(handleCurrentUserRemovedFromRoom());
+        });
+      }
+      return;
+    }
+
+    _confirmedMembership = true;
+    final member = roomUsers[currentIndex];
+    final shouldForceMicOff = !member.hasMicPermission && isMicOn;
+
+    if (shouldForceMicOff) {
+      isMicOn = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(liveKitRoom.localParticipant?.setMicrophoneEnabled(false));
+        unawaited(roomService.updateMicState(
+          roomId: widget.roomId,
+          userId: currentUserId,
+          isMicOn: false,
+        ));
+      });
+      return;
+    }
+
+    if (isMicOn != member.isMicOn) {
+      isMicOn = member.isMicOn;
+    }
+  }
+
+  Future<void> handleCurrentUserRemovedFromRoom() async {
+    if (!mounted || isLeavingRoom) return;
+
+    isLeavingRoom = true;
+    await disconnectVoiceRoom();
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('You were removed from this room')),
+    );
+
+    Navigator.pop(context);
   }
 
   @override
@@ -1159,6 +1254,8 @@ void dispose() {
                 if (a.isMicOn != b.isMicOn) return a.isMicOn ? -1 : 1;
                 return a.name.toLowerCase().compareTo(b.name.toLowerCase());
               });
+
+            syncCurrentUserFromMembers(users);
 
             final topUsers = users
                 .where((user) => user.isMicOn)
@@ -2379,9 +2476,11 @@ class RoomUserTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isLeaderUser = user.isLeader || user.role.toLowerCase() == 'owner';
+    final targetUserId = user.userId.trim();
+    final signedInUserId = currentUserId.trim();
     final canManageUser = isAdmin &&
-        user.userId.trim().isNotEmpty &&
-        user.userId != currentUserId;
+        targetUserId.isNotEmpty &&
+        targetUserId != signedInUserId;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),

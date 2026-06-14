@@ -310,17 +310,25 @@ class RoomService {
     required String roomId,
     required String userId,
   }) async {
+    if (roomId.trim().isEmpty || userId.trim().isEmpty) return;
+
     final memberRef = _firestore
         .collection('rooms')
         .doc(roomId)
         .collection('members')
         .doc(userId);
 
-    await memberRef.set({
+    final memberDoc = await memberRef.get();
+    if (!memberDoc.exists) {
+      await updateRoomCounts(roomId: roomId);
+      return;
+    }
+
+    await memberRef.update({
       'isOnline': false,
       'isMicOn': false,
       'lastSeen': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    });
 
     await memberRef.delete();
     await updateRoomCounts(roomId: roomId);
@@ -383,16 +391,22 @@ class RoomService {
     required String userId,
     required bool hasMicPermission,
   }) async {
-    await _firestore
+    final memberRef = _firestore
         .collection('rooms')
         .doc(roomId)
         .collection('members')
-        .doc(userId)
-        .set({
+        .doc(userId);
+
+    final memberDoc = await memberRef.get();
+    if (!memberDoc.exists) {
+      throw Exception('Room member not found');
+    }
+
+    await memberRef.update({
       'hasMicPermission': hasMicPermission,
       if (!hasMicPermission) 'isMicOn': false,
       'lastSeen': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    });
 
     await updateRoomCounts(roomId: roomId);
   }
@@ -402,15 +416,19 @@ class RoomService {
     required String userId,
     required bool isMicOn,
   }) async {
-    await _firestore
+    final memberRef = _firestore
         .collection('rooms')
         .doc(roomId)
         .collection('members')
-        .doc(userId)
-        .set({
+        .doc(userId);
+
+    final memberDoc = await memberRef.get();
+    if (!memberDoc.exists) return;
+
+    await memberRef.update({
       'isMicOn': isMicOn,
       'lastSeen': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    });
 
     await updateRoomCounts(roomId: roomId);
   }
@@ -506,6 +524,11 @@ class RoomService {
       throw Exception('Only the current leader can transfer leadership');
     }
 
+    final newOwnerDoc = await roomRef.collection('members').doc(newOwnerId).get();
+    if (!newOwnerDoc.exists) {
+      throw Exception('New leader is not in the room');
+    }
+
     final members = await roomRef.collection('members').get();
     final batch = _firestore.batch();
 
@@ -519,16 +542,18 @@ class RoomService {
     for (final doc in members.docs) {
       final isNewOwner = doc.id == newOwnerId;
       final isOldOwner = doc.id == oldOwnerId;
-      batch.set(doc.reference, {
+      batch.update(doc.reference, {
         'isLeader': isNewOwner,
         'hasMicPermission': isNewOwner
             ? true
             : (isOldOwner ? false : (doc.data()['hasMicPermission'] == true)),
         if (isOldOwner) 'isMicOn': false,
-      }, SetOptions(merge: true));
+        'lastSeen': FieldValue.serverTimestamp(),
+      });
     }
 
     await batch.commit();
+    await updateRoomCounts(roomId: roomId);
 
     await sendSystemMessage(
       roomId: roomId,
