@@ -957,18 +957,21 @@ class _RoomScreenState extends State<RoomScreen>
       pageBuilder: (context, animation, secondaryAnimation) {
         return Align(
           alignment: Alignment.centerLeft,
-          child: Material(
-            color: Colors.transparent,
-            child: Container(
-              width: 330,
-              height: double.infinity,
-              padding: const EdgeInsets.fromLTRB(18, 90, 18, 20),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.34),
-                border: Border(
-                  right: BorderSide(color: Colors.white.withOpacity(0.08)),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {},
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                width: 330,
+                height: double.infinity,
+                padding: const EdgeInsets.fromLTRB(18, 90, 18, 20),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.34),
+                  border: Border(
+                    right: BorderSide(color: Colors.white.withOpacity(0.08)),
+                  ),
                 ),
-              ),
               child: Directionality(
                 textDirection: TextDirection.ltr,
                 child: StreamBuilder(
@@ -1048,7 +1051,8 @@ class _RoomScreenState extends State<RoomScreen>
               ),
             ),
           ),
-        );
+        ),
+      );
       },
       transitionBuilder: (context, animation, secondaryAnimation, child) {
         return SlideTransition(
