@@ -2583,7 +2583,7 @@ class RoomWaveBackgroundPainter extends CustomPainter {
   }
 }
 
-class RoomUserTile extends StatelessWidget {
+class RoomUserTile extends StatefulWidget {
   const RoomUserTile({
     super.key,
     required this.user,
@@ -2611,97 +2611,188 @@ class RoomUserTile extends StatelessWidget {
   final VoidCallback? onInvite;
   final VoidCallback? onPrivateChat;
 
-  bool get isCurrentUser => user.userId.trim() == currentUserId.trim();
+  @override
+  State<RoomUserTile> createState() => _RoomUserTileState();
+}
 
-  Future<void> handleFriendAction(BuildContext context, String status) async {
+class _RoomUserTileState extends State<RoomUserTile> {
+  StreamSubscription<dynamic>? _friendSub;
+  String _friendStatus = 'none';
+
+  bool get isCurrentUser =>
+      widget.user.userId.trim() == widget.currentUserId.trim();
+
+  @override
+  void initState() {
+    super.initState();
+    if (!isCurrentUser) {
+      _friendSub = widget.roomService
+          .friendLinkStream(
+            currentUserId: widget.currentUserId,
+            otherUserId: widget.user.userId,
+          )
+          .listen((doc) {
+        final data = (doc as dynamic)?.data() as Map<String, dynamic>?;
+        final status = (data?['status'] ?? 'none').toString();
+        if (mounted) setState(() => _friendStatus = status);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _friendSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _handleFriendAction() async {
     try {
-      if (status == 'pending_sent') {
-        await roomService.cancelFriendRequest(
-          fromUserId: currentUserId,
-          toUserId: user.userId,
+      if (_friendStatus == 'pending_sent') {
+        await widget.roomService.cancelFriendRequest(
+          fromUserId: widget.currentUserId,
+          toUserId: widget.user.userId,
         );
-      } else if (status == 'pending_received') {
-        await roomService.acceptFriendRequest(
-          currentUserId: currentUserId,
-          currentName: currentUserName,
-          currentImage: currentUserImage,
-          otherUserId: user.userId,
-          otherName: user.name,
-          otherImage: user.image,
+      } else if (_friendStatus == 'pending_received') {
+        await widget.roomService.acceptFriendRequest(
+          currentUserId: widget.currentUserId,
+          currentName: widget.currentUserName,
+          currentImage: widget.currentUserImage,
+          otherUserId: widget.user.userId,
+          otherName: widget.user.name,
+          otherImage: widget.user.image,
         );
-      } else if (status == 'friends') {
-        await roomService.removeFriend(
-          currentUserId: currentUserId,
-          otherUserId: user.userId,
+      } else if (_friendStatus == 'friends') {
+        await widget.roomService.removeFriend(
+          currentUserId: widget.currentUserId,
+          otherUserId: widget.user.userId,
         );
       } else {
-        await roomService.sendFriendRequest(
-          fromUserId: currentUserId,
-          fromName: currentUserName,
-          fromImage: currentUserImage,
-          toUserId: user.userId,
-          toName: user.name,
-          toImage: user.image,
+        await widget.roomService.sendFriendRequest(
+          fromUserId: widget.currentUserId,
+          fromName: widget.currentUserName,
+          fromImage: widget.currentUserImage,
+          toUserId: widget.user.userId,
+          toName: widget.user.name,
+          toImage: widget.user.image,
         );
       }
     } catch (e) {
-      if (!context.mounted) return;
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('فشلت العملية: $e')),
       );
     }
   }
 
-  Widget _friendButton() {
-    if (isCurrentUser) return const SizedBox.shrink();
-
-    return StreamBuilder(
-      stream: roomService.friendLinkStream(
-        currentUserId: currentUserId,
-        otherUserId: user.userId,
-      ),
-      builder: (context, snapshot) {
-        final doc = snapshot.data as dynamic;
-        final data = doc?.data() as Map<String, dynamic>?;
-        final status = (data?['status'] ?? 'none').toString();
-
-        IconData icon = Icons.person_add_alt_1_rounded;
-        Color color = Colors.white70;
-        String tooltip = 'إضافة صديق';
-
-        if (status == 'pending_sent') {
-          icon = Icons.check_circle_rounded;
-          color = Colors.greenAccent;
-          tooltip = 'سحب طلب الصداقة';
-        } else if (status == 'pending_received') {
-          icon = Icons.person_add_alt_rounded;
-          color = Colors.orangeAccent;
-          tooltip = 'قبول طلب الصداقة';
-        } else if (status == 'friends') {
-          icon = Icons.people_alt_rounded;
-          color = Colors.lightBlueAccent;
-          tooltip = 'صديق';
-        }
-
-        return IconButton(
-          tooltip: tooltip,
-          onPressed: () => handleFriendAction(context, status),
-          icon: Icon(icon, color: color, size: 22),
-          padding: EdgeInsets.zero,
-          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
-    final isLeaderUser = user.isLeader || user.role.toLowerCase() == 'owner';
-    final targetUserId = user.userId.trim();
-    final signedInUserId = currentUserId.trim();
-    final canManageUser = isAdmin &&
+    final isLeaderUser =
+        widget.user.isLeader || widget.user.role.toLowerCase() == 'owner';
+    final targetUserId = widget.user.userId.trim();
+    final signedInUserId = widget.currentUserId.trim();
+    final canManageUser = widget.isAdmin &&
         targetUserId.isNotEmpty &&
         targetUserId != signedInUserId;
+
+    final menuItems = <PopupMenuEntry<String>>[];
+
+    if (!isCurrentUser) {
+      // Friend action — label/icon changes based on current status
+      IconData friendIcon;
+      Color friendColor;
+      String friendLabel;
+      if (_friendStatus == 'pending_sent') {
+        friendIcon = Icons.check_circle_rounded;
+        friendColor = Colors.greenAccent;
+        friendLabel = 'سحب طلب الصداقة';
+      } else if (_friendStatus == 'pending_received') {
+        friendIcon = Icons.person_add_alt_rounded;
+        friendColor = Colors.orangeAccent;
+        friendLabel = 'قبول طلب الصداقة';
+      } else if (_friendStatus == 'friends') {
+        friendIcon = Icons.people_alt_rounded;
+        friendColor = Colors.lightBlueAccent;
+        friendLabel = 'إزالة صديق';
+      } else {
+        friendIcon = Icons.person_add_alt_1_rounded;
+        friendColor = Colors.white70;
+        friendLabel = 'إضافة صديق';
+      }
+      menuItems.add(PopupMenuItem<String>(
+        value: 'friend',
+        child: Row(children: [
+          Icon(friendIcon, color: friendColor, size: 20),
+          const SizedBox(width: 8),
+          Text(friendLabel, style: const TextStyle(color: Colors.white)),
+        ]),
+      ));
+
+      // Private chat — only when friends
+      if (_friendStatus == 'friends' && widget.onPrivateChat != null) {
+        menuItems.add(const PopupMenuItem<String>(
+          value: 'private_chat',
+          child: Row(children: [
+            Icon(Icons.chat_bubble_outline_rounded,
+                color: Colors.lightBlueAccent, size: 20),
+            SizedBox(width: 8),
+            Text('رسالة خاصة', style: TextStyle(color: Colors.white)),
+          ]),
+        ));
+      }
+
+      // Invite to room
+      if (widget.onInvite != null) {
+        menuItems.add(const PopupMenuItem<String>(
+          value: 'invite',
+          child: Row(children: [
+            Icon(Icons.send_rounded, color: Colors.purpleAccent, size: 20),
+            SizedBox(width: 8),
+            Text('دعوة للروم', style: TextStyle(color: Colors.white)),
+          ]),
+        ));
+      }
+    }
+
+    if (canManageUser) {
+      // Mic toggle — single item: green = grant, red = revoke
+      menuItems.add(PopupMenuItem<String>(
+        value: 'mic',
+        child: Row(children: [
+          Icon(
+            widget.user.hasMicPermission
+                ? Icons.mic_off_rounded
+                : Icons.mic_rounded,
+            color: widget.user.hasMicPermission
+                ? Colors.redAccent
+                : Colors.greenAccent,
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            widget.user.hasMicPermission ? 'سحب المايك' : 'إعطاء مايك',
+            style: const TextStyle(color: Colors.white),
+          ),
+        ]),
+      ));
+
+      menuItems.add(const PopupMenuItem<String>(
+        value: 'make_leader',
+        child: Row(children: [
+          Icon(Icons.workspace_premium_rounded, color: Colors.amber, size: 20),
+          SizedBox(width: 8),
+          Text('تعيين ليدر', style: TextStyle(color: Colors.white)),
+        ]),
+      ));
+
+      menuItems.add(const PopupMenuItem<String>(
+        value: 'kick',
+        child: Row(children: [
+          Icon(Icons.block_rounded, color: Colors.redAccent, size: 20),
+          SizedBox(width: 8),
+          Text('طرد', style: TextStyle(color: Colors.white)),
+        ]),
+      ));
+    }
 
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
@@ -2717,16 +2808,17 @@ class RoomUserTile extends StatelessWidget {
       child: Row(
         children: [
           LeaderGoldAvatar(
-            image: user.image,
+            image: widget.user.image,
             radius: 26,
             isLeader: isLeaderUser,
           ),
           const SizedBox(width: 10),
-          Text(user.countryFlag, style: const TextStyle(fontSize: 18)),
+          Text(widget.user.countryFlag,
+              style: const TextStyle(fontSize: 18)),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              user.name,
+              widget.user.name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
@@ -2736,84 +2828,21 @@ class RoomUserTile extends StatelessWidget {
               ),
             ),
           ),
-          // Friend button - always visible for other users
-          _friendButton(),
-          // Invite button - always visible for other users
-          if (!isCurrentUser && onInvite != null)
-            IconButton(
-              tooltip: 'دعوة للروم',
-              onPressed: onInvite,
-              icon: const Icon(Icons.send_rounded, color: Colors.purpleAccent, size: 20),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            ),
-          // Private chat - only for friends
-          if (!isCurrentUser && onPrivateChat != null)
-            StreamBuilder(
-              stream: roomService.friendLinkStream(
-                currentUserId: currentUserId,
-                otherUserId: user.userId,
-              ),
-              builder: (context, snapshot) {
-                final doc = snapshot.data as dynamic;
-                final data = doc?.data() as Map<String, dynamic>?;
-                final isFriend = (data?['status'] ?? '') == 'friends';
-                if (!isFriend) return const SizedBox.shrink();
-                return IconButton(
-                  tooltip: 'رسالة خاصة',
-                  onPressed: onPrivateChat,
-                  icon: const Icon(Icons.chat_bubble_outline_rounded, color: Colors.lightBlueAccent, size: 20),
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                );
-              },
-            ),
-          // Admin controls - only for room admin managing others
-          if (canManageUser) ...[
-            IconButton(
-              onPressed: onToggleMicPermission,
-              tooltip: user.hasMicPermission ? 'سحب المايك' : 'منح المايك',
-              icon: Icon(
-                user.hasMicPermission ? Icons.mic_rounded : Icons.mic_off_rounded,
-                color: user.hasMicPermission ? Colors.greenAccent : Colors.redAccent,
-                size: 22,
-              ),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            ),
+          if (!isCurrentUser && menuItems.isNotEmpty)
             PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert, color: Colors.white70, size: 22),
+              icon: const Icon(Icons.more_vert,
+                  color: Colors.white70, size: 22),
               color: const Color(0xFF21153E),
               onSelected: (value) {
-                if (value == 'make_leader') onMakeLeader();
-                if (value == 'kick') onKick();
+                if (value == 'friend') unawaited(_handleFriendAction());
+                if (value == 'private_chat') widget.onPrivateChat?.call();
+                if (value == 'invite') widget.onInvite?.call();
+                if (value == 'mic') widget.onToggleMicPermission();
+                if (value == 'make_leader') widget.onMakeLeader();
+                if (value == 'kick') widget.onKick();
               },
-              itemBuilder: (context) {
-                return [
-                  const PopupMenuItem(
-                    value: 'make_leader',
-                    child: Row(
-                      children: [
-                        Icon(Icons.workspace_premium_rounded, color: Colors.amber, size: 20),
-                        SizedBox(width: 8),
-                        Text('تعيين ليدر', style: TextStyle(color: Colors.white)),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: 'kick',
-                    child: Row(
-                      children: [
-                        Icon(Icons.block_rounded, color: Colors.redAccent, size: 20),
-                        SizedBox(width: 8),
-                        Text('طرد', style: TextStyle(color: Colors.white)),
-                      ],
-                    ),
-                  ),
-                ];
-              },
+              itemBuilder: (context) => menuItems,
             ),
-          ],
         ],
       ),
     );

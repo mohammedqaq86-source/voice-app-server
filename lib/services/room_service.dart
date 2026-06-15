@@ -994,9 +994,8 @@ class RoomService {
     final chatId = privateChatId(fromUserId, toUserId);
     final chatRef = _firestore.collection('privateChats').doc(chatId);
 
-    final batch = _firestore.batch();
-
-    batch.set(chatRef, {
+    // Write chat doc first so the message security rule can read participants
+    await chatRef.set({
       'participants': [fromUserId, toUserId],
       'lastMessage': message,
       'lastMessageFrom': fromUserId,
@@ -1005,8 +1004,7 @@ class RoomService {
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    final msgRef = chatRef.collection('messages').doc();
-    batch.set(msgRef, {
+    await chatRef.collection('messages').add({
       'senderId': fromUserId,
       'senderName': fromName,
       'senderImage': fromImage,
@@ -1014,8 +1012,6 @@ class RoomService {
       'isRead': false,
       'createdAt': FieldValue.serverTimestamp(),
     });
-
-    await batch.commit();
 
     unawaited(sendNotification(
       toUserId: toUserId,
