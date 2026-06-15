@@ -2227,12 +2227,11 @@ class LeaderGoldAvatar extends StatelessWidget {
         ),
 
 
-        // تاج VIP أفخم، ثابت فوق الإطار ومربوط فيه.
         if (isLeader)
           Positioned(
-            top: -(effectiveCrownSize * 1.04),
+            top: -(effectiveCrownSize * 1.20),
             child: CustomPaint(
-              size: Size(effectiveCrownSize * 1.85, effectiveCrownSize * 1.08),
+              size: Size(effectiveCrownSize * 1.95, effectiveCrownSize * 1.22),
               painter: PremiumGoldCrownPainter(),
             ),
           ),
@@ -2244,101 +2243,62 @@ class LeaderGoldAvatar extends StatelessWidget {
 class PremiumGoldCrownPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
+    final double w = size.width;
+    final double h = size.height;
+
+    // Crown silhouette — 4-spike white crown matching reference image
     final Path crown = Path()
-      ..moveTo(size.width * 0.07, size.height * 0.76)
-      ..lineTo(size.width * 0.14, size.height * 0.26)
-      ..lineTo(size.width * 0.31, size.height * 0.54)
-      ..lineTo(size.width * 0.42, size.height * 0.13)
-      ..lineTo(size.width * 0.50, size.height * 0.48)
-      ..lineTo(size.width * 0.58, size.height * 0.13)
-      ..lineTo(size.width * 0.69, size.height * 0.54)
-      ..lineTo(size.width * 0.86, size.height * 0.26)
-      ..lineTo(size.width * 0.93, size.height * 0.76)
-      ..quadraticBezierTo(
-        size.width * 0.50,
-        size.height * 0.94,
-        size.width * 0.07,
-        size.height * 0.76,
-      )
+      ..moveTo(w * 0.05, h * 0.82)
+      ..lineTo(w * 0.13, h * 0.34)     // outer-left slope
+      ..lineTo(w * 0.28, h * 0.60)     // left valley
+      ..lineTo(w * 0.40, h * 0.05)     // inner-left peak (tall)
+      ..lineTo(w * 0.50, h * 0.38)     // center dip
+      ..lineTo(w * 0.60, h * 0.05)     // inner-right peak (tall)
+      ..lineTo(w * 0.72, h * 0.60)     // right valley
+      ..lineTo(w * 0.87, h * 0.34)     // outer-right slope
+      ..lineTo(w * 0.95, h * 0.82)     // bottom-right
+      ..quadraticBezierTo(w * 0.50, h * 0.97, w * 0.05, h * 0.82)
       ..close();
 
-    final Paint shadow = Paint()
-      ..color = Colors.black.withOpacity(0.38)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
-    canvas.drawPath(crown.shift(const Offset(0, 2.5)), shadow);
+    // Drop shadow
+    canvas.drawPath(
+      crown.shift(const Offset(0, 2.8)),
+      Paint()
+        ..color = const Color(0x55000000)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+    );
 
-    final Paint gold = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          Color(0xFFFFFBE0),
-          Color(0xFFFFE082),
-          Color(0xFFFFB300),
-          Color(0xFFFF8F00),
-        ],
-        stops: [0.0, 0.35, 0.72, 1.0],
-      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
-    canvas.drawPath(crown, gold);
+    // Solid white fill
+    canvas.drawPath(crown, Paint()..color = Colors.white);
 
-    final Paint darkEdge = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.4
-      ..color = Colors.black.withOpacity(0.45);
-    canvas.drawPath(crown, darkEdge);
+    // Thin grey outline for crisp edges
+    canvas.drawPath(
+      crown,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.7
+        ..strokeJoin = StrokeJoin.round
+        ..color = const Color(0x33000000),
+    );
 
-    final Paint highlight = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.9
-      ..color = Colors.white.withOpacity(0.62);
-    canvas.drawPath(crown.shift(const Offset(0, -0.8)), highlight);
+    // Inner highlight along the top spikes
+    final Path spikes = Path()
+      ..moveTo(w * 0.13, h * 0.34)
+      ..lineTo(w * 0.28, h * 0.60)
+      ..lineTo(w * 0.40, h * 0.05)
+      ..lineTo(w * 0.50, h * 0.38)
+      ..lineTo(w * 0.60, h * 0.05)
+      ..lineTo(w * 0.72, h * 0.60)
+      ..lineTo(w * 0.87, h * 0.34);
 
-    final Paint baseLine = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0
-      ..strokeCap = StrokeCap.round
-      ..shader = const LinearGradient(
-        colors: [
-          Color(0xFFFFF8C6),
-          Color(0xFFFFB300),
-          Color(0xFFFFF8C6),
-        ],
-      ).createShader(Rect.fromLTWH(0, 0, size.width, size.height));
-
-    final Path base = Path()
-      ..moveTo(size.width * 0.16, size.height * 0.75)
-      ..quadraticBezierTo(
-        size.width * 0.50,
-        size.height * 0.84,
-        size.width * 0.84,
-        size.height * 0.75,
-      );
-    canvas.drawPath(base, baseLine);
-
-    void drawGem(double x, double y, double r, Color color) {
-      final Paint gemShadow = Paint()
-        ..color = Colors.black.withOpacity(0.24)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
-      canvas.drawCircle(Offset(size.width * x, size.height * y + 1), r, gemShadow);
-
-      final Paint gem = Paint()
-        ..shader = RadialGradient(
-          colors: [
-            Colors.white.withOpacity(0.95),
-            color,
-          ],
-        ).createShader(
-          Rect.fromCircle(
-            center: Offset(size.width * x, size.height * y),
-            radius: r,
-          ),
-        );
-      canvas.drawCircle(Offset(size.width * x, size.height * y), r, gem);
-    }
-
-    drawGem(0.50, 0.43, size.width * 0.047, const Color(0xFFFFF176));
-    drawGem(0.22, 0.53, size.width * 0.032, const Color(0xFFFFE082));
-    drawGem(0.78, 0.53, size.width * 0.032, const Color(0xFFFFE082));
+    canvas.drawPath(
+      spikes,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0
+        ..strokeJoin = StrokeJoin.round
+        ..color = const Color(0x28000000),
+    );
   }
 
   @override
