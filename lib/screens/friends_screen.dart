@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../services/room_service.dart';
 import '../widgets/friend_tile.dart';
+import 'private_chat_screen.dart';
 
 class FriendsScreen extends StatefulWidget {
   const FriendsScreen({
@@ -104,6 +105,53 @@ class _FriendsScreenState extends State<FriendsScreen>
     );
   }
 
+  Future<bool> _confirmRemoveFriend(String name) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => Directionality(
+            textDirection: TextDirection.rtl,
+            child: AlertDialog(
+              backgroundColor: const Color(0xFF21153E),
+              title: const Text(
+                'إزالة الصديق',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+              content: Text(
+                'هل أنت متأكد من إزالة $name من قائمة أصدقائك؟',
+                style: const TextStyle(color: Colors.white70),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('إلغاء', style: TextStyle(color: Colors.white54)),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('إزالة', style: TextStyle(color: Colors.redAccent)),
+                ),
+              ],
+            ),
+          ),
+        ) ??
+        false;
+  }
+
+  void _openPrivateChat(String otherUserId, String otherName, String otherImage) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PrivateChatScreen(
+          currentUserId: widget.currentUserId,
+          currentUserName: widget.currentUserName,
+          currentUserImage: widget.currentUserImage,
+          otherUserId: otherUserId,
+          otherName: otherName,
+          otherImage: otherImage,
+        ),
+      ),
+    );
+  }
+
   Widget _friendsList() {
     return StreamBuilder(
       stream: _service.friendsStream(userId: widget.currentUserId),
@@ -117,29 +165,49 @@ class _FriendsScreenState extends State<FriendsScreen>
             if (items.isEmpty)
               _empty('لا يوجد أصدقاء حتى الآن')
             else
-              ...items.map((data) {
-                final otherUserId = (data['userId'] ?? '').toString();
+              ...List.generate(items.length, (i) {
+                final data = items[i];
+                final doc = docs[i];
+                final otherUserId = (doc.id.isNotEmpty ? doc.id : (data['userId'] ?? '')).toString();
+                final otherName = (data['name'] ?? 'User').toString();
+                final otherImage = (data['image'] ?? '').toString();
                 return FriendTile(
-                  name: (data['name'] ?? 'User').toString(),
-                  image: (data['image'] ?? '').toString(),
+                  name: otherName,
+                  image: otherImage,
                   subtitle: 'صديق',
-                  trailing: IconButton(
-                    tooltip: 'إزالة الصديق',
-                    onPressed: () async {
-                      await _service.removeFriend(
-                        currentUserId: widget.currentUserId,
-                        otherUserId: otherUserId,
-                      );
-                      if (!context.mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('تمت إزالة الصديق')),
-                      );
-                    },
-                    icon: const Icon(
-                      Icons.person_remove_rounded,
-                      color: Colors.redAccent,
-                      size: 22,
-                    ),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: 'رسالة خاصة',
+                        onPressed: () => _openPrivateChat(otherUserId, otherName, otherImage),
+                        icon: const Icon(
+                          Icons.chat_bubble_outline_rounded,
+                          color: Colors.lightBlueAccent,
+                          size: 22,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'إزالة الصديق',
+                        onPressed: () async {
+                          final confirmed = await _confirmRemoveFriend(otherName);
+                          if (!confirmed) return;
+                          await _service.removeFriend(
+                            currentUserId: widget.currentUserId,
+                            otherUserId: otherUserId,
+                          );
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('تمت إزالة الصديق')),
+                          );
+                        },
+                        icon: const Icon(
+                          Icons.person_remove_rounded,
+                          color: Colors.redAccent,
+                          size: 22,
+                        ),
+                      ),
+                    ],
                   ),
                 );
               }),
@@ -162,8 +230,10 @@ class _FriendsScreenState extends State<FriendsScreen>
             if (items.isEmpty)
               _empty('لا توجد طلبات واردة')
             else
-              ...items.map((data) {
-                final otherUserId = (data['userId'] ?? '').toString();
+              ...List.generate(items.length, (i) {
+                final data = items[i];
+                final doc = docs[i];
+                final otherUserId = (doc.id.isNotEmpty ? doc.id : (data['userId'] ?? '')).toString();
                 final otherName = (data['name'] ?? 'User').toString();
                 final otherImage = (data['image'] ?? '').toString();
                 return FriendTile(
@@ -232,8 +302,10 @@ class _FriendsScreenState extends State<FriendsScreen>
             if (items.isEmpty)
               _empty('لا توجد طلبات مرسلة')
             else
-              ...items.map((data) {
-                final otherUserId = (data['userId'] ?? '').toString();
+              ...List.generate(items.length, (i) {
+                final data = items[i];
+                final doc = docs[i];
+                final otherUserId = (doc.id.isNotEmpty ? doc.id : (data['userId'] ?? '')).toString();
                 final otherName = (data['name'] ?? 'User').toString();
                 return FriendTile(
                   name: otherName,

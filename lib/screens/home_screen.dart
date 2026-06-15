@@ -9,6 +9,7 @@ import '../widgets/room_card.dart';
 import '../widgets/search_box.dart';
 import 'friends_screen.dart';
 import 'notifications_screen.dart';
+import 'private_chat_screen.dart';
 import 'room_screen.dart';
 import 'source_picker_screen.dart';
 import 'youtube_picker_screen.dart';
@@ -416,6 +417,7 @@ class _HomeScreenState extends State<HomeScreen>
                     onOpenFriends: openFriendsScreen,
                     onOpenNotifications: openNotificationsScreen,
                     notificationService: notificationService,
+                    roomService: roomService,
                     currentUserId: currentUserId,
                   ),
                   const SearchBox(),
@@ -766,6 +768,37 @@ class FriendsPanel extends StatelessWidget {
     );
   }
 
+  Future<bool> _confirmRemoveFriend(BuildContext context, String name) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => Directionality(
+            textDirection: TextDirection.rtl,
+            child: AlertDialog(
+              backgroundColor: const Color(0xFF21153E),
+              title: const Text(
+                'إزالة الصديق',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+              content: Text(
+                'هل أنت متأكد من إزالة $name من قائمة أصدقائك؟',
+                style: const TextStyle(color: Colors.white70),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('إلغاء', style: TextStyle(color: Colors.white54)),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('إزالة', style: TextStyle(color: Colors.redAccent)),
+                ),
+              ],
+            ),
+          ),
+        ) ??
+        false;
+  }
+
   Widget _friendsList() {
     return StreamBuilder(
       stream: roomService.friendsStream(userId: currentUserId),
@@ -779,12 +812,36 @@ class FriendsPanel extends StatelessWidget {
           children: docs.map<Widget>((doc) {
             final item = doc.data() as Map<String, dynamic>;
             final otherUserId = (item['userId'] ?? doc.id).toString();
+            final otherName = (item['name'] ?? 'User').toString();
+            final otherImage = (item['image'] ?? '').toString();
             return _userTile(
               data: item,
               actions: [
                 IconButton(
+                  tooltip: 'رسالة خاصة',
+                  onPressed: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => PrivateChatScreen(
+                          currentUserId: currentUserId,
+                          currentUserName: currentUserName,
+                          currentUserImage: currentUserImage,
+                          otherUserId: otherUserId,
+                          otherName: otherName,
+                          otherImage: otherImage,
+                        ),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.chat_bubble_outline_rounded, color: Colors.lightBlueAccent),
+                ),
+                IconButton(
                   tooltip: 'إزالة الصديق',
                   onPressed: () async {
+                    final confirmed = await _confirmRemoveFriend(context, otherName);
+                    if (!confirmed) return;
                     await roomService.removeFriend(
                       currentUserId: currentUserId,
                       otherUserId: otherUserId,
@@ -1139,12 +1196,14 @@ class HomeHeader extends StatelessWidget {
     required this.onOpenNotifications,
     required this.notificationService,
     required this.currentUserId,
+    required this.roomService,
   });
 
   final VoidCallback onOpenMenu;
   final VoidCallback onOpenFriends;
   final VoidCallback onOpenNotifications;
   final NotificationService notificationService;
+  final RoomService roomService;
   final String currentUserId;
 
   @override
@@ -1210,13 +1269,45 @@ class HomeHeader extends StatelessWidget {
               );
             },
           ),
-          IconButton(
-            onPressed: onOpenFriends,
-            icon: const Icon(
-              Icons.people_alt_rounded,
-              size: 32,
-              color: Colors.white,
-            ),
+          // Friends icon with private message badge
+          StreamBuilder<int>(
+            stream: roomService.unreadPrivateMessagesCount(userId: currentUserId),
+            builder: (context, snapshot) {
+              final pmCount = snapshot.data ?? 0;
+              return Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  IconButton(
+                    onPressed: onOpenFriends,
+                    icon: const Icon(
+                      Icons.people_alt_rounded,
+                      size: 32,
+                      color: Colors.white,
+                    ),
+                  ),
+                  if (pmCount > 0)
+                    Positioned(
+                      top: 6,
+                      left: 6,
+                      child: Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: const BoxDecoration(
+                          color: Colors.lightBlueAccent,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Text(
+                          pmCount > 99 ? '99+' : '$pmCount',
+                          style: const TextStyle(
+                            color: Colors.black,
+                            fontSize: 9,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+            },
           ),
         ],
       ),

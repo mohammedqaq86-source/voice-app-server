@@ -6,6 +6,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class RoomService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
+  // ─── Notifications ────────────────────────────────────────────────────────
+
   Future<void> sendNotification({
     required String toUserId,
     required String type,
@@ -38,6 +40,8 @@ class RoomService {
     } catch (_) {}
   }
 
+  // ─── Room CRUD ────────────────────────────────────────────────────────────
+
   Future<String> createRoom({
     required String title,
     required String image,
@@ -57,6 +61,7 @@ class RoomService {
       'isPrivate': isPrivate,
       'isOpen': true,
       'isRealRoom': true,
+      'allMicEnabled': false,
       'usersCount': 1,
       'speakersCount': 0,
       'createdAt': FieldValue.serverTimestamp(),
@@ -117,6 +122,48 @@ class RoomService {
     });
   }
 
+  Future<void> updateRoomPrivacy({
+    required String roomId,
+    required bool isPrivate,
+  }) async {
+    await _firestore.collection('rooms').doc(roomId).update({
+      'isPrivate': isPrivate,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> enableMicForAll({required String roomId}) async {
+    await _firestore.collection('rooms').doc(roomId).update({
+      'allMicEnabled': true,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> disableMicForAll({required String roomId}) async {
+    final roomRef = _firestore.collection('rooms').doc(roomId);
+    final membersSnap = await roomRef.collection('members').get();
+    final batch = _firestore.batch();
+
+    batch.update(roomRef, {
+      'allMicEnabled': false,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    for (final doc in membersSnap.docs) {
+      final data = doc.data();
+      if (data['isLeader'] == true) continue;
+      batch.update(doc.reference, {
+        'isMicOn': false,
+        'hasMicPermission': false,
+        'lastSeen': FieldValue.serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
+  }
+
+  // ─── Streams ──────────────────────────────────────────────────────────────
+
   Stream<QuerySnapshot<Map<String, dynamic>>> publicOpenRoomsStream() {
     return _firestore
         .collection('rooms')
@@ -152,6 +199,8 @@ class RoomService {
   }) {
     return _firestore.collection('rooms').doc(roomId).get();
   }
+
+  // ─── Invites ──────────────────────────────────────────────────────────────
 
   Future<void> deleteInviteFromUser({
     required String userId,
@@ -251,6 +300,7 @@ class RoomService {
     await batch.commit();
   }
 
+  // ─── Members ──────────────────────────────────────────────────────────────
 
   Future<void> cleanupLegacyRoomMembers({required String roomId}) async {
     final roomRef = _firestore.collection('rooms').doc(roomId);
@@ -296,7 +346,6 @@ class RoomService {
     final ownerId = (roomData['ownerId'] ?? '').toString();
     final isOwner = ownerId.isNotEmpty && ownerId == userId;
 
-    // Only the room owner has permission to delete other members' docs
     if (isOwner) {
       await cleanupLegacyRoomMembers(roomId: roomId);
     }
@@ -311,8 +360,7 @@ class RoomService {
     final batch = _firestore.batch();
 
     final memberRef = roomRef.collection('members').doc(userId);
-    // For non-owners, exclude hasMicPermission so re-joining doesn't reset
-    // any mic permission the room owner previously granted them.
+    // Always explicitly set hasMicPermission so rejoining revokes prior grants
     final memberData = <String, dynamic>{
       'userId': userId,
       'name': name,
@@ -320,12 +368,10 @@ class RoomService {
       'isLeader': isOwner,
       'isOnline': true,
       'isMicOn': false,
+      'hasMicPermission': isOwner,
       'joinedAt': FieldValue.serverTimestamp(),
       'lastSeen': FieldValue.serverTimestamp(),
     };
-    if (isOwner || hasMicPermission) {
-      memberData['hasMicPermission'] = true;
-    }
     batch.set(memberRef, memberData, SetOptions(merge: true));
 
     if (inviteDoc.exists) {
@@ -336,7 +382,6 @@ class RoomService {
 
     await batch.commit();
 
-    // Only the owner can update all members' isLeader fields
     if (isOwner) {
       await ensureSingleLeader(roomId: roomId);
     }
@@ -359,16 +404,25 @@ class RoomService {
   }) async {
     if (roomId.trim().isEmpty || userId.trim().isEmpty) return;
 
-    final memberRef = _firestore
-        .collection('rooms')
-        .doc(roomId)
-        .collection('members')
-        .doc(userId);
+    final roomRef = _firestore.collection('rooms').doc(roomId);
+    final memberRef = roomRef.collection('members').doc(userId);
 
     final memberDoc = await memberRef.get();
     if (!memberDoc.exists) {
       await updateRoomCounts(roomId: roomId, isOwner: false);
       return;
+    }
+
+    // Check if the leaving user is the room owner → auto-transfer leadership
+    final roomDoc = await roomRef.get();
+    if (roomDoc.exists) {
+      final ownerId = (roomDoc.data()?['ownerId'] ?? '').toString();
+      if (ownerId == userId) {
+        await _autoTransferLeadershipOnLeave(
+          roomId: roomId,
+          leavingUserId: userId,
+        );
+      }
     }
 
     await memberRef.update({
@@ -379,6 +433,81 @@ class RoomService {
 
     await memberRef.delete();
     await updateRoomCounts(roomId: roomId, isOwner: false);
+  }
+
+  Future<void> _autoTransferLeadershipOnLeave({
+    required String roomId,
+    required String leavingUserId,
+  }) async {
+    try {
+      final roomRef = _firestore.collection('rooms').doc(roomId);
+      final membersSnap = await roomRef
+          .collection('members')
+          .orderBy('joinedAt')
+          .get();
+
+      final remaining = membersSnap.docs
+          .where((doc) => doc.id != leavingUserId)
+          .toList();
+
+      if (remaining.isEmpty) {
+        await roomRef.update({
+          'isOpen': false,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+        return;
+      }
+
+      final newLeaderDoc = remaining.first;
+      final newLeaderId = newLeaderDoc.id;
+      final newLeaderData = newLeaderDoc.data();
+      final newLeaderName = (newLeaderData['name'] ?? 'User').toString();
+      final newLeaderImage = (newLeaderData['image'] ?? '').toString();
+
+      final batch = _firestore.batch();
+
+      batch.update(roomRef, {
+        'ownerId': newLeaderId,
+        'ownerName': newLeaderName,
+        'ownerImage': newLeaderImage,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      for (final doc in membersSnap.docs) {
+        if (doc.id == leavingUserId) continue;
+        final isNew = doc.id == newLeaderId;
+        batch.update(doc.reference, {
+          'isLeader': isNew,
+          if (isNew) 'hasMicPermission': true,
+          'lastSeen': FieldValue.serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+
+      await sendSystemMessage(
+        roomId: roomId,
+        text: '$newLeaderName أصبح الليدر الجديد',
+        userId: newLeaderId,
+        name: newLeaderName,
+        image: newLeaderImage,
+        isLeader: true,
+        icon: Icons.workspace_premium_rounded,
+      );
+
+      unawaited(sendNotification(
+        toUserId: newLeaderId,
+        type: 'leaderTransferred',
+        title: 'أنت الليدر الجديد 👑',
+        body: 'تم نقل قيادة الروم إليك تلقائياً',
+        fromUserId: leavingUserId,
+        fromName: newLeaderName,
+        fromImage: newLeaderImage,
+        roomId: roomId,
+      ));
+    } catch (_) {
+      // Don't block the leave operation if transfer fails
+    }
   }
 
   Future<void> ensureSingleLeader({required String roomId}) async {
@@ -404,7 +533,6 @@ class RoomService {
   }
 
   Future<void> updateRoomCounts({required String roomId, bool isOwner = false}) async {
-    // Only the room owner can delete legacy bot docs
     if (isOwner) {
       await cleanupLegacyRoomMembers(roomId: roomId);
     }
@@ -608,6 +736,8 @@ class RoomService {
     );
   }
 
+  // ─── Messages ─────────────────────────────────────────────────────────────
+
   Future<void> sendMessage({
     required String roomId,
     required String userId,
@@ -678,6 +808,8 @@ class RoomService {
   Stream<DocumentSnapshot<Map<String, dynamic>>> roomStream(String roomId) {
     return _firestore.collection('rooms').doc(roomId).snapshots();
   }
+
+  // ─── Friends ──────────────────────────────────────────────────────────────
 
   Stream<DocumentSnapshot<Map<String, dynamic>>> friendLinkStream({
     required String currentUserId,
@@ -841,5 +973,116 @@ class RoomService {
     required String otherUserId,
   }) async {
     await cancelFriendRequest(fromUserId: currentUserId, toUserId: otherUserId);
+  }
+
+  // ─── Private Chat ─────────────────────────────────────────────────────────
+
+  String privateChatId(String uid1, String uid2) {
+    final sorted = [uid1, uid2]..sort();
+    return sorted.join('_');
+  }
+
+  Future<void> sendPrivateMessage({
+    required String fromUserId,
+    required String fromName,
+    required String fromImage,
+    required String toUserId,
+    required String message,
+  }) async {
+    if (fromUserId.isEmpty || toUserId.isEmpty || fromUserId == toUserId) return;
+
+    final chatId = privateChatId(fromUserId, toUserId);
+    final chatRef = _firestore.collection('privateChats').doc(chatId);
+
+    final batch = _firestore.batch();
+
+    batch.set(chatRef, {
+      'participants': [fromUserId, toUserId],
+      'lastMessage': message,
+      'lastMessageFrom': fromUserId,
+      'lastMessageFromName': fromName,
+      'lastMessageAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    final msgRef = chatRef.collection('messages').doc();
+    batch.set(msgRef, {
+      'senderId': fromUserId,
+      'senderName': fromName,
+      'senderImage': fromImage,
+      'text': message,
+      'isRead': false,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+
+    unawaited(sendNotification(
+      toUserId: toUserId,
+      type: 'privateMessage',
+      title: 'رسالة خاصة من $fromName',
+      body: message,
+      fromUserId: fromUserId,
+      fromName: fromName,
+      fromImage: fromImage,
+    ));
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> privateMessagesStream({
+    required String currentUserId,
+    required String otherUserId,
+  }) {
+    final chatId = privateChatId(currentUserId, otherUserId);
+    return _firestore
+        .collection('privateChats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('createdAt')
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> myPrivateChatsStream({
+    required String userId,
+  }) {
+    return _firestore
+        .collection('privateChats')
+        .where('participants', arrayContains: userId)
+        .orderBy('updatedAt', descending: true)
+        .snapshots();
+  }
+
+  Future<void> markPrivateChatRead({
+    required String currentUserId,
+    required String otherUserId,
+  }) async {
+    try {
+      final chatId = privateChatId(currentUserId, otherUserId);
+      final msgs = await _firestore
+          .collection('privateChats')
+          .doc(chatId)
+          .collection('messages')
+          .where('isRead', isEqualTo: false)
+          .where('senderId', isEqualTo: otherUserId)
+          .get();
+
+      if (msgs.docs.isEmpty) return;
+
+      final batch = _firestore.batch();
+      for (final doc in msgs.docs) {
+        batch.update(doc.reference, {'isRead': true});
+      }
+      await batch.commit();
+    } catch (_) {}
+  }
+
+  Stream<int> unreadPrivateMessagesCount({required String userId}) {
+    return _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('notifications')
+        .where('isRead', isEqualTo: false)
+        .where('type', isEqualTo: 'privateMessage')
+        .snapshots()
+        .map((snap) => snap.docs.length);
   }
 }

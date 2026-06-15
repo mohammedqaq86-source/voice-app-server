@@ -16,11 +16,17 @@ service cloud.firestore {
         get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerId == request.auth.uid;
     }
 
-    // Fields that only the room owner may set on a member doc
+    // Fields that only the room owner may set on a member doc.
+    // Allows members to revoke their own mic (set to false) but NOT elevate (set to true).
     function touchesSensitiveFields() {
-      return request.resource.data.diff(resource.data)
-        .affectedKeys()
-        .hasAny(['isLeader', 'hasMicPermission']);
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      // isLeader: never changeable by the member themselves
+      if (affected.hasAny(['isLeader'])) { return true; }
+      // hasMicPermission: sensitive only when being ELEVATED to true
+      if (affected.hasAny(['hasMicPermission']) && request.resource.data.hasMicPermission == true) {
+        return true;
+      }
+      return false;
     }
 
     // ─── Users ───────────────────────────────────────────────────────────────
@@ -98,6 +104,34 @@ service cloud.firestore {
         );
         allow update: if isRoomOwner(roomId);
         allow delete: if isRoomOwner(roomId);
+      }
+    }
+
+    // ─── Private Chats ───────────────────────────────────────────────────────
+    match /privateChats/{chatId} {
+      function isParticipant() {
+        return isSignedIn() && resource.data.participants.hasAny([request.auth.uid]);
+      }
+      function willBeParticipant() {
+        return isSignedIn() && request.resource.data.participants.hasAny([request.auth.uid]);
+      }
+
+      allow read:   if isParticipant();
+      allow create: if willBeParticipant()
+                    && request.resource.data.participants.size() == 2;
+      allow update: if isParticipant();
+
+      match /messages/{msgId} {
+        allow read:   if isSignedIn() &&
+          get(/databases/$(database)/documents/privateChats/$(chatId))
+            .data.participants.hasAny([request.auth.uid]);
+        allow create: if isSignedIn() &&
+          request.resource.data.senderId == request.auth.uid &&
+          get(/databases/$(database)/documents/privateChats/$(chatId))
+            .data.participants.hasAny([request.auth.uid]);
+        allow update: if isSignedIn() &&
+          get(/databases/$(database)/documents/privateChats/$(chatId))
+            .data.participants.hasAny([request.auth.uid]);
       }
     }
   }

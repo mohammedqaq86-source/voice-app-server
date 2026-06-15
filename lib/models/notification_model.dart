@@ -9,6 +9,7 @@ enum NotificationType {
   micRevoked,
   leaderTransferred,
   kicked,
+  privateMessage,
 }
 
 extension NotificationTypeX on NotificationType {
@@ -28,6 +29,8 @@ extension NotificationTypeX on NotificationType {
         return Icons.workspace_premium_rounded;
       case NotificationType.kicked:
         return Icons.block_rounded;
+      case NotificationType.privateMessage:
+        return Icons.chat_bubble_rounded;
     }
   }
 
@@ -47,6 +50,8 @@ extension NotificationTypeX on NotificationType {
         return Colors.amberAccent;
       case NotificationType.kicked:
         return Colors.redAccent;
+      case NotificationType.privateMessage:
+        return Colors.lightBlueAccent;
     }
   }
 }

@@ -13,6 +13,7 @@ import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import '../models/room.dart';
 import '../models/room_member_model.dart';
 import '../services/room_service.dart';
+import 'private_chat_screen.dart';
 
 class ReplyTarget {
   final String name;
@@ -161,16 +162,16 @@ class _RoomScreenState extends State<RoomScreen>
       final nextOwnerId = (data['ownerId'] ?? '').toString();
       final nextOwnerName = (data['ownerName'] ?? '').toString();
       final nextOwnerImage = (data['ownerImage'] ?? '').toString();
+      final nextPrivate = data['isPrivate'] == true;
+      final nextAllMic = data['allMicEnabled'] == true;
 
-      if (nextOwnerId != currentOwnerId ||
-          nextOwnerName != currentOwnerName ||
-          nextOwnerImage != currentOwnerImage) {
-        setState(() {
-          currentOwnerId = nextOwnerId;
-          currentOwnerName = nextOwnerName;
-          currentOwnerImage = nextOwnerImage;
-        });
-      }
+      setState(() {
+        currentOwnerId = nextOwnerId;
+        currentOwnerName = nextOwnerName;
+        currentOwnerImage = nextOwnerImage;
+        isPrivateRoom = nextPrivate;
+        everyoneCanUseMic = nextAllMic;
+      });
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -586,91 +587,151 @@ class _RoomScreenState extends State<RoomScreen>
   }
 
   void sendInvite() {
-    final canInvite = !isPrivateRoom || canManageRoom;
-
-    if (!canInvite) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Only the room owner can invite in private rooms'),
-        ),
-      );
-      return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Invite system opened')),
-    );
+    _showInviteFriendsSheet();
   }
 
-
-  void showFriendsList() {
+  void _showInviteFriendsSheet() {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF17112F),
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
       ),
-      builder: (context) {
+      builder: (ctx) {
         return Directionality(
           textDirection: TextDirection.rtl,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(18, 18, 18, 28),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 52,
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: Colors.white24,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                ),
-                const SizedBox(height: 18),
-                const Row(
-                  children: [
-                    Icon(
-                      Icons.people_alt_rounded,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                    SizedBox(width: 10),
-                    Text(
-                      'قائمة الأصدقاء',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.08),
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.08),
+          child: DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.55,
+            minChildSize: 0.3,
+            maxChildSize: 0.85,
+            builder: (_, scrollController) {
+              return Column(
+                children: [
+                  const SizedBox(height: 14),
+                  Container(
+                    width: 52,
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(20),
                     ),
                   ),
-                  child: const Text(
-                    'هنا ستظهر قائمة الأصدقاء وطلبات الصداقة بعد ربطها مع Firestore.',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 15,
-                      height: 1.5,
+                  const SizedBox(height: 14),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 18),
+                    child: Row(
+                      children: [
+                        Icon(Icons.person_add_alt_1_rounded, color: Colors.white, size: 26),
+                        SizedBox(width: 10),
+                        Text(
+                          'دعوة أصدقاء للروم',
+                          style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w900),
+                        ),
+                      ],
                     ),
                   ),
-                ),
-              ],
-            ),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: StreamBuilder(
+                      stream: roomService.friendsStream(userId: currentUserId),
+                      builder: (context, snapshot) {
+                        final docs = snapshot.data?.docs ?? [];
+                        if (docs.isEmpty) {
+                          return const Center(
+                            child: Text(
+                              'لا يوجد أصدقاء لدعوتهم',
+                              style: TextStyle(color: Colors.white54),
+                            ),
+                          );
+                        }
+                        return ListView.builder(
+                          controller: scrollController,
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                          itemCount: docs.length,
+                          itemBuilder: (context, index) {
+                            final data = docs[index].data();
+                            final friendId = docs[index].id;
+                            final friendName = (data['name'] ?? 'User').toString();
+                            final friendImage = (data['image'] ?? '').toString();
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 10),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.06),
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: ListTile(
+                                leading: CircleAvatar(
+                                  backgroundImage: friendImage.isNotEmpty ? NetworkImage(friendImage) : null,
+                                  child: friendImage.isEmpty ? const Icon(Icons.person) : null,
+                                ),
+                                title: Text(
+                                  friendName,
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                ),
+                                trailing: ElevatedButton.icon(
+                                  onPressed: () async {
+                                    Navigator.pop(ctx);
+                                    try {
+                                      await roomService.inviteUserToRoom(
+                                        roomId: widget.roomId,
+                                        roomTitle: widget.room.title,
+                                        roomImage: widget.room.image,
+                                        ownerId: currentUserId,
+                                        ownerName: currentUserName,
+                                        invitedUserId: friendId,
+                                        invitedUserName: friendName,
+                                        invitedUserImage: friendImage,
+                                      );
+                                      unawaited(roomService.sendNotification(
+                                        toUserId: friendId,
+                                        type: 'roomInvite',
+                                        title: 'دعوة للانضمام إلى روم',
+                                        body: '$currentUserName يدعوك للانضمام إلى ${widget.room.title}',
+                                        fromUserId: currentUserId,
+                                        fromName: currentUserName,
+                                        fromImage: currentUserImage,
+                                        roomId: widget.roomId,
+                                        roomTitle: widget.room.title,
+                                      ));
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('تم إرسال الدعوة إلى $friendName')),
+                                      );
+                                    } catch (e) {
+                                      if (!mounted) return;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('فشل إرسال الدعوة: $e')),
+                                      );
+                                    }
+                                  },
+                                  icon: const Icon(Icons.send_rounded, size: 16),
+                                  label: const Text('دعوة'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.white.withOpacity(0.15),
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         );
       },
     );
+  }
+
+  void showFriendsList() {
+    _showInviteFriendsSheet();
   }
 
   void showRoomMenu() {
@@ -789,7 +850,7 @@ class _RoomScreenState extends State<RoomScreen>
   void openRoomSettings() {
     if (!canManageRoom) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Only the room leader can open settings')),
+        const SnackBar(content: Text('فقط الليدر يمكنه فتح الإعدادات')),
       );
       return;
     }
@@ -800,11 +861,11 @@ class _RoomScreenState extends State<RoomScreen>
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
       ),
-      builder: (context) {
+      builder: (ctx) {
         return StatefulBuilder(
-          builder: (context, setSheetState) {
+          builder: (ctx, setSheetState) {
             return Directionality(
-              textDirection: TextDirection.ltr,
+              textDirection: TextDirection.rtl,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(22, 22, 22, 30),
                 child: Column(
@@ -820,7 +881,7 @@ class _RoomScreenState extends State<RoomScreen>
                     ),
                     const SizedBox(height: 22),
                     const Text(
-                      'Room Settings',
+                      'إعدادات الروم',
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 24,
@@ -829,40 +890,86 @@ class _RoomScreenState extends State<RoomScreen>
                     ),
                     const SizedBox(height: 18),
                     SwitchListTile(
-                      value: everyoneCanUseMic,
-                      activeColor: Colors.white,
-                      title: const Text(
-                        'Everyone can use mic',
-                        style: TextStyle(color: Colors.white),
-                      ),
-                      subtitle: const Text(
-                        'Allow all users to turn on their mic',
-                        style: TextStyle(color: Colors.white54),
-                      ),
-                      onChanged: (value) {
-                        setState(() {
-                          everyoneCanUseMic = value;
-                        });
-                        setSheetState(() {});
-                      },
-                    ),
-                    SwitchListTile(
                       value: isPrivateRoom,
                       activeColor: Colors.white,
                       title: const Text(
-                        'Private room',
+                        'روم خاص',
                         style: TextStyle(color: Colors.white),
                       ),
                       subtitle: const Text(
-                        'Only invited users can enter',
+                        'فقط المدعوون يمكنهم الدخول',
                         style: TextStyle(color: Colors.white54),
                       ),
                       onChanged: (value) {
-                        setState(() {
-                          isPrivateRoom = value;
-                        });
                         setSheetState(() {});
+                        setState(() => isPrivateRoom = value);
+                        unawaited(roomService.updateRoomPrivacy(
+                          roomId: widget.roomId,
+                          isPrivate: value,
+                        ));
                       },
+                    ),
+                    SwitchListTile(
+                      value: everyoneCanUseMic,
+                      activeColor: Colors.white,
+                      title: const Text(
+                        'السماح للجميع بالمايك',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      subtitle: const Text(
+                        'يسمح لجميع الأعضاء بتشغيل المايك',
+                        style: TextStyle(color: Colors.white54),
+                      ),
+                      onChanged: (value) {
+                        setSheetState(() {});
+                        if (value) {
+                          unawaited(roomService.enableMicForAll(roomId: widget.roomId));
+                        } else {
+                          unawaited(roomService.disableMicForAll(roomId: widget.roomId));
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              Navigator.pop(ctx);
+                              await roomService.enableMicForAll(roomId: widget.roomId);
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('تم تفعيل المايك للجميع')),
+                              );
+                            },
+                            icon: const Icon(Icons.mic_rounded, color: Colors.greenAccent),
+                            label: const Text('تفعيل المايك للكل', style: TextStyle(color: Colors.greenAccent)),
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(color: Colors.greenAccent.withOpacity(0.5)),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              Navigator.pop(ctx);
+                              await roomService.disableMicForAll(roomId: widget.roomId);
+                              if (!mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('تم تعطيل المايك للجميع')),
+                              );
+                            },
+                            icon: const Icon(Icons.mic_off_rounded, color: Colors.redAccent),
+                            label: const Text('تعطيل المايك للكل', style: TextStyle(color: Colors.redAccent)),
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(color: Colors.redAccent.withOpacity(0.5)),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -1003,6 +1110,41 @@ class _RoomScreenState extends State<RoomScreen>
     setState(() => _showUsersPanel = true);
   }
 
+  Future<void> _inviteUserFromPanel(RoomUser user) async {
+    try {
+      await roomService.inviteUserToRoom(
+        roomId: widget.roomId,
+        roomTitle: widget.room.title,
+        roomImage: widget.room.image,
+        ownerId: currentUserId,
+        ownerName: currentUserName,
+        invitedUserId: user.userId,
+        invitedUserName: user.name,
+        invitedUserImage: user.image,
+      );
+      unawaited(roomService.sendNotification(
+        toUserId: user.userId,
+        type: 'roomInvite',
+        title: 'دعوة للانضمام إلى روم',
+        body: '$currentUserName يدعوك للانضمام إلى ${widget.room.title}',
+        fromUserId: currentUserId,
+        fromName: currentUserName,
+        fromImage: currentUserImage,
+        roomId: widget.roomId,
+        roomTitle: widget.room.title,
+      ));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تم إرسال الدعوة إلى ${user.name}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('فشل إرسال الدعوة: $e')),
+      );
+    }
+  }
+
   Widget _buildUsersPanel() {
     return GestureDetector(
       onTap: () {},
@@ -1085,6 +1227,26 @@ class _RoomScreenState extends State<RoomScreen>
                     },
                     onMakeLeader: () {
                       unawaited(makeUserLeader(user));
+                    },
+                    onInvite: () {
+                      Navigator.pop(context);
+                      unawaited(_inviteUserFromPanel(user));
+                    },
+                    onPrivateChat: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => PrivateChatScreen(
+                            currentUserId: currentUserId,
+                            currentUserName: currentUserName,
+                            currentUserImage: currentUserImage,
+                            otherUserId: user.userId,
+                            otherName: user.name,
+                            otherImage: user.image,
+                          ),
+                        ),
+                      );
                     },
                   );
                 },
@@ -2433,6 +2595,8 @@ class RoomUserTile extends StatelessWidget {
     required this.onToggleMicPermission,
     required this.onKick,
     required this.onMakeLeader,
+    this.onInvite,
+    this.onPrivateChat,
   });
 
   final RoomUser user;
@@ -2444,8 +2608,10 @@ class RoomUserTile extends StatelessWidget {
   final VoidCallback onToggleMicPermission;
   final VoidCallback onKick;
   final VoidCallback onMakeLeader;
+  final VoidCallback? onInvite;
+  final VoidCallback? onPrivateChat;
 
-  bool get isCurrentUser => user.userId == currentUserId;
+  bool get isCurrentUser => user.userId.trim() == currentUserId.trim();
 
   Future<void> handleFriendAction(BuildContext context, String status) async {
     try {
@@ -2481,12 +2647,12 @@ class RoomUserTile extends StatelessWidget {
     } catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Friend action failed: $e')),
+        SnackBar(content: Text('فشلت العملية: $e')),
       );
     }
   }
 
-  Widget friendButton() {
+  Widget _friendButton() {
     if (isCurrentUser) return const SizedBox.shrink();
 
     return StreamBuilder(
@@ -2500,7 +2666,7 @@ class RoomUserTile extends StatelessWidget {
         final status = (data?['status'] ?? 'none').toString();
 
         IconData icon = Icons.person_add_alt_1_rounded;
-        Color color = Colors.white;
+        Color color = Colors.white70;
         String tooltip = 'إضافة صديق';
 
         if (status == 'pending_sent') {
@@ -2514,13 +2680,15 @@ class RoomUserTile extends StatelessWidget {
         } else if (status == 'friends') {
           icon = Icons.people_alt_rounded;
           color = Colors.lightBlueAccent;
-          tooltip = 'إزالة الصديق';
+          tooltip = 'صديق';
         }
 
         return IconButton(
           tooltip: tooltip,
           onPressed: () => handleFriendAction(context, status),
-          icon: Icon(icon, color: color, size: 24),
+          icon: Icon(icon, color: color, size: 22),
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
         );
       },
     );
@@ -2553,9 +2721,9 @@ class RoomUserTile extends StatelessWidget {
             radius: 26,
             isLeader: isLeaderUser,
           ),
-          const SizedBox(width: 12),
-          Text(user.countryFlag, style: const TextStyle(fontSize: 20)),
-          const SizedBox(width: 8),
+          const SizedBox(width: 10),
+          Text(user.countryFlag, style: const TextStyle(fontSize: 18)),
+          const SizedBox(width: 6),
           Expanded(
             child: Text(
               user.name,
@@ -2563,51 +2731,82 @@ class RoomUserTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: Colors.white,
-                fontSize: 18,
+                fontSize: 16,
                 fontWeight: FontWeight.bold,
               ),
             ),
           ),
-          friendButton(),
+          // Friend button - always visible for other users
+          _friendButton(),
+          // Invite button - always visible for other users
+          if (!isCurrentUser && onInvite != null)
+            IconButton(
+              tooltip: 'دعوة للروم',
+              onPressed: onInvite,
+              icon: const Icon(Icons.send_rounded, color: Colors.purpleAccent, size: 20),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            ),
+          // Private chat - only for friends
+          if (!isCurrentUser && onPrivateChat != null)
+            StreamBuilder(
+              stream: roomService.friendLinkStream(
+                currentUserId: currentUserId,
+                otherUserId: user.userId,
+              ),
+              builder: (context, snapshot) {
+                final doc = snapshot.data as dynamic;
+                final data = doc?.data() as Map<String, dynamic>?;
+                final isFriend = (data?['status'] ?? '') == 'friends';
+                if (!isFriend) return const SizedBox.shrink();
+                return IconButton(
+                  tooltip: 'رسالة خاصة',
+                  onPressed: onPrivateChat,
+                  icon: const Icon(Icons.chat_bubble_outline_rounded, color: Colors.lightBlueAccent, size: 20),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                );
+              },
+            ),
+          // Admin controls - only for room admin managing others
           if (canManageUser) ...[
             IconButton(
               onPressed: onToggleMicPermission,
+              tooltip: user.hasMicPermission ? 'سحب المايك' : 'منح المايك',
               icon: Icon(
-                user.hasMicPermission
-                    ? Icons.mic_rounded
-                    : Icons.mic_off_rounded,
-                color: user.hasMicPermission
-                    ? Colors.greenAccent
-                    : Colors.redAccent,
-                size: 24,
+                user.hasMicPermission ? Icons.mic_rounded : Icons.mic_off_rounded,
+                color: user.hasMicPermission ? Colors.greenAccent : Colors.redAccent,
+                size: 22,
               ),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
             ),
             PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert, color: Colors.white),
+              icon: const Icon(Icons.more_vert, color: Colors.white70, size: 22),
               color: const Color(0xFF21153E),
               onSelected: (value) {
                 if (value == 'make_leader') onMakeLeader();
                 if (value == 'kick') onKick();
               },
               itemBuilder: (context) {
-                return const [
-                  PopupMenuItem(
+                return [
+                  const PopupMenuItem(
                     value: 'make_leader',
                     child: Row(
                       children: [
                         Icon(Icons.workspace_premium_rounded, color: Colors.amber, size: 20),
                         SizedBox(width: 8),
-                        Text('Make Leader', style: TextStyle(color: Colors.white)),
+                        Text('تعيين ليدر', style: TextStyle(color: Colors.white)),
                       ],
                     ),
                   ),
-                  PopupMenuItem(
+                  const PopupMenuItem(
                     value: 'kick',
                     child: Row(
                       children: [
                         Icon(Icons.block_rounded, color: Colors.redAccent, size: 20),
                         SizedBox(width: 8),
-                        Text('Kick', style: TextStyle(color: Colors.white)),
+                        Text('طرد', style: TextStyle(color: Colors.white)),
                       ],
                     ),
                   ),
