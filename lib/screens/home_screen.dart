@@ -32,6 +32,13 @@ class _HomeScreenState extends State<HomeScreen>
   late final AnimationController backgroundController;
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _publicRoomsStream;
 
+  // Caches per-room permission futures so we don't create a new Future (and
+  // restart the FutureBuilder) on every parent rebuild.
+  final Map<String, Future<bool>> _canShowRoomCache = {};
+  // Tracks rooms already passed to closeRoomIfEmpty this session so we don't
+  // hammer Firestore with redundant reads on every stream emission.
+  final Set<String> _cleanedRoomIds = {};
+
   User? get firebaseUser => FirebaseAuth.instance.currentUser;
 
   String get currentUserId => firebaseUser?.uid ?? 'guest_user';
@@ -143,10 +150,10 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Future<bool> canShowRoom(String roomId) async {
-    return roomService.canUserEnterRoom(
-      roomId: roomId,
-      userId: currentUserId,
+  Future<bool> canShowRoom(String roomId) {
+    return _canShowRoomCache.putIfAbsent(
+      roomId,
+      () => roomService.canUserEnterRoom(roomId: roomId, userId: currentUserId),
     );
   }
 
@@ -499,10 +506,13 @@ class _HomeScreenState extends State<HomeScreen>
                         final snapshotData = snapshot.data as dynamic;
                         final docs = snapshotData?.docs ?? [];
 
-                        // Trigger background cleanup for every visible room so
-                        // ghost-only rooms are closed without waiting for a join.
+                        // Check each room once per session: if it has no real
+                        // members, close it. _cleanedRoomIds prevents redundant
+                        // Firestore reads on subsequent stream emissions.
                         for (final doc in docs) {
-                          unawaited(roomService.closeRoomIfEmpty(doc.id));
+                          if (_cleanedRoomIds.add(doc.id)) {
+                            unawaited(roomService.closeRoomIfEmpty(doc.id));
+                          }
                         }
 
                         if (docs.isEmpty) {
@@ -606,6 +616,17 @@ class InvitedRoomsSection extends StatefulWidget {
 class _InvitedRoomsSectionState extends State<InvitedRoomsSection> {
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _invitesStream;
 
+  // Cache per-invite room doc futures so FutureBuilder isn't restarted on
+  // every rebuild of this widget.
+  final Map<String, Future<dynamic>> _roomDocCache = {};
+
+  Future<dynamic> _roomDocFuture(String roomId) {
+    return _roomDocCache.putIfAbsent(
+      roomId,
+      () => widget.roomService.roomDocFuture(roomId: roomId),
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -680,7 +701,7 @@ class _InvitedRoomsSectionState extends State<InvitedRoomsSection> {
                 final roomId = invite['roomId']?.toString() ?? inviteDoc.id;
 
                 return FutureBuilder(
-                  future: widget.roomService.roomDocFuture(roomId: roomId),
+                  future: _roomDocFuture(roomId),
                   builder: (context, roomSnapshot) {
                     if (roomSnapshot.connectionState ==
                         ConnectionState.waiting) {
@@ -1025,12 +1046,16 @@ class AnimatedWaveHomeBackground extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Pass child as the AnimatedBuilder child param so Flutter builds it ONCE
+    // and caches it. The builder callback is still called every animation frame
+    // but only repaints the CustomPainter — it does NOT rebuild the widget tree.
     return AnimatedBuilder(
       animation: controller,
-      builder: (context, _) {
+      child: SizedBox.expand(child: child),
+      builder: (context, builtChild) {
         return CustomPaint(
           painter: HomeWaveBackgroundPainter(controller.value),
-          child: SizedBox.expand(child: child),
+          child: builtChild,
         );
       },
     );
