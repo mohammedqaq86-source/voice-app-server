@@ -195,6 +195,20 @@ class _RoomScreenState extends State<RoomScreen>
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      if (!isLeavingRoom && currentUserId != 'guest_user' && hasJoinedRoom) {
+        isLeavingRoom = true;
+        unawaited(disconnectVoiceRoom());
+        unawaited(roomService.leaveRoom(
+          roomId: widget.roomId,
+          userId: currentUserId,
+        ));
+      }
+    }
+  }
+
+  @override
   void dispose() {
     backgroundController.dispose();
     youtubeController.dispose();

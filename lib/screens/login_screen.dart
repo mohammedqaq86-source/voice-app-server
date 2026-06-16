@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -11,6 +12,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final emailController = TextEditingController();
   final passwordController = TextEditingController();
+  final nameController = TextEditingController();
 
   bool isLoading = false;
   bool isRegisterMode = false;
@@ -19,6 +21,7 @@ class _LoginScreenState extends State<LoginScreen> {
   void dispose() {
     emailController.dispose();
     passwordController.dispose();
+    nameController.dispose();
     super.dispose();
   }
 
@@ -46,10 +49,36 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       if (isRegisterMode) {
-        await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        final displayName = nameController.text.trim();
+        if (displayName.isEmpty) {
+          setState(() => isLoading = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('اكتب اسمك أولاً')),
+          );
+          return;
+        }
+
+        final cred = await FirebaseAuth.instance.createUserWithEmailAndPassword(
           email: email,
           password: password,
         );
+
+        // Save display name to Firebase Auth
+        await cred.user?.updateDisplayName(displayName);
+
+        // Create Firestore profile
+        await FirebaseFirestore.instance.collection('users').doc(cred.user!.uid).set({
+          'uid': cred.user!.uid,
+          'email': email,
+          'name': displayName,
+          'username': '',
+          'bio': '',
+          'country': '',
+          'photoUrl': '',
+          'joinedAt': FieldValue.serverTimestamp(),
+          'visitCount': 0,
+          'sessionToken': '',
+        });
       } else {
         await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: email,
@@ -191,6 +220,27 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   const SizedBox(height: 24),
+
+                  if (isRegisterMode) ...[
+                    TextField(
+                      controller: nameController,
+                      textDirection: TextDirection.rtl,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'الاسم الكامل',
+                        hintStyle: const TextStyle(color: Colors.white54),
+                        prefixIcon: const Icon(Icons.person_rounded,
+                            color: Colors.white38),
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.12),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(18),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
 
                   TextField(
                     controller: emailController,

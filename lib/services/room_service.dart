@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -432,7 +433,17 @@ class RoomService {
     });
 
     await memberRef.delete();
-    await updateRoomCounts(roomId: roomId, isOwner: false);
+
+    // Auto-close room when last member leaves
+    final remaining = await roomRef.collection('members').get();
+    if (remaining.docs.isEmpty) {
+      await roomRef.update({
+        'isOpen': false,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } else {
+      await updateRoomCounts(roomId: roomId, isOwner: false);
+    }
   }
 
   Future<void> _autoTransferLeadershipOnLeave({
@@ -581,7 +592,7 @@ class RoomService {
       'lastSeen': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
-    await updateRoomCounts(roomId: roomId, isOwner: true);
+    await updateRoomCounts(roomId: roomId, isOwner: false);
   }
 
   Future<void> updateMicState({
@@ -628,7 +639,7 @@ class RoomService {
     });
 
     await batch.commit();
-    await updateRoomCounts(roomId: roomId, isOwner: true);
+    await updateRoomCounts(roomId: roomId, isOwner: false);
 
     await sendSystemMessage(
       roomId: roomId,
@@ -723,7 +734,7 @@ class RoomService {
     }
 
     await batch.commit();
-    await updateRoomCounts(roomId: roomId, isOwner: true);
+    await updateRoomCounts(roomId: roomId, isOwner: false);
 
     await sendSystemMessage(
       roomId: roomId,
@@ -1080,5 +1091,151 @@ class RoomService {
         .where('type', isEqualTo: 'privateMessage')
         .snapshots()
         .map((snap) => snap.docs.length);
+  }
+
+  // ─── User Profile ─────────────────────────────────────────────────────────
+
+  Future<void> ensureUserProfile({
+    required String uid,
+    required String email,
+    String? displayName,
+    String? photoUrl,
+  }) async {
+    final ref = _firestore.collection('users').doc(uid);
+    final doc = await ref.get();
+
+    if (!doc.exists) {
+      await ref.set({
+        'uid': uid,
+        'email': email,
+        'name': displayName?.isNotEmpty == true ? displayName : email.split('@').first,
+        'username': '',
+        'bio': '',
+        'country': '',
+        'photoUrl': photoUrl ?? '',
+        'joinedAt': FieldValue.serverTimestamp(),
+        'visitCount': 0,
+        'sessionToken': '',
+      });
+    } else {
+      final updates = <String, dynamic>{};
+      if (displayName != null && displayName.isNotEmpty) updates['name'] = displayName;
+      if (photoUrl != null && photoUrl.isNotEmpty) updates['photoUrl'] = photoUrl;
+      if (updates.isNotEmpty) await ref.set(updates, SetOptions(merge: true));
+    }
+  }
+
+  Future<void> updateUserProfile({
+    required String uid,
+    String? name,
+    String? username,
+    String? bio,
+    String? country,
+    String? photoUrl,
+  }) async {
+    final updates = <String, dynamic>{};
+    if (name != null) updates['name'] = name;
+    if (username != null) updates['username'] = username;
+    if (bio != null) updates['bio'] = bio;
+    if (country != null) updates['country'] = country;
+    if (photoUrl != null) updates['photoUrl'] = photoUrl;
+    if (updates.isEmpty) return;
+    await _firestore.collection('users').doc(uid).set(updates, SetOptions(merge: true));
+  }
+
+  Stream<DocumentSnapshot<Map<String, dynamic>>> userProfileStream(String uid) {
+    return _firestore.collection('users').doc(uid).snapshots();
+  }
+
+  Future<DocumentSnapshot<Map<String, dynamic>>> getUserProfile(String uid) {
+    return _firestore.collection('users').doc(uid).get();
+  }
+
+  Future<void> recordProfileVisit({
+    required String targetUid,
+    required String visitorId,
+    required String visitorName,
+    required String visitorImage,
+  }) async {
+    if (targetUid == visitorId) return;
+
+    await _firestore
+        .collection('users')
+        .doc(targetUid)
+        .collection('profileVisitors')
+        .doc(visitorId)
+        .set({
+      'visitorId': visitorId,
+      'visitorName': visitorName,
+      'visitorImage': visitorImage,
+      'visitTime': FieldValue.serverTimestamp(),
+    });
+
+    await _firestore.collection('users').doc(targetUid).set(
+      {'visitCount': FieldValue.increment(1)},
+      SetOptions(merge: true),
+    );
+
+    unawaited(sendNotification(
+      toUserId: targetUid,
+      type: 'profileVisit',
+      title: 'زيارة جديدة 👁',
+      body: '$visitorName زار ملفك الشخصي',
+      fromUserId: visitorId,
+      fromName: visitorName,
+      fromImage: visitorImage,
+    ));
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> profileVisitorsStream(String uid) {
+    return _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('profileVisitors')
+        .orderBy('visitTime', descending: true)
+        .snapshots();
+  }
+
+  Stream<int> friendsCountStream(String uid) {
+    return _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('socialLinks')
+        .where('status', isEqualTo: 'friends')
+        .snapshots()
+        .map((s) => s.docs.length);
+  }
+
+  Stream<int> createdRoomsCountStream(String uid) {
+    return _firestore
+        .collection('rooms')
+        .where('ownerId', isEqualTo: uid)
+        .where('isRealRoom', isEqualTo: true)
+        .snapshots()
+        .map((s) => s.docs.length);
+  }
+
+  // ─── Session Management ───────────────────────────────────────────────────
+
+  String _generateSessionToken() {
+    final rand = math.Random.secure();
+    return List.generate(32, (_) => rand.nextInt(36).toRadixString(36)).join();
+  }
+
+  Future<String> updateSessionToken(String uid) async {
+    final token = _generateSessionToken();
+    await _firestore.collection('users').doc(uid).set(
+      {'sessionToken': token},
+      SetOptions(merge: true),
+    );
+    return token;
+  }
+
+  Stream<String?> sessionTokenStream(String uid) {
+    return _firestore
+        .collection('users')
+        .doc(uid)
+        .snapshots()
+        .map((doc) => doc.data()?['sessionToken'] as String?);
   }
 }

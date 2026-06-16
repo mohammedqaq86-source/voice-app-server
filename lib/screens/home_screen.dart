@@ -9,8 +9,9 @@ import '../widgets/room_card.dart';
 import '../widgets/search_box.dart';
 import 'friends_screen.dart';
 import 'notifications_screen.dart';
-import 'private_chat_screen.dart';
+import 'profile_screen.dart';
 import 'room_screen.dart';
+import 'settings_screen.dart';
 import 'source_picker_screen.dart';
 import 'youtube_picker_screen.dart';
 
@@ -143,21 +144,46 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  void openFriendsPanel() {
+  void openSideMenu() {
     showGeneralDialog(
       context: context,
       barrierDismissible: true,
-      barrierLabel: 'friends-panel',
+      barrierLabel: 'side-menu',
       barrierColor: Colors.black.withOpacity(0.35),
       transitionDuration: const Duration(milliseconds: 260),
       pageBuilder: (context, animation, secondaryAnimation) {
         return Align(
           alignment: Alignment.centerRight,
-          child: FriendsPanel(
+          child: SideMenuPanel(
             roomService: roomService,
             currentUserId: currentUserId,
             currentUserName: currentUserName,
             currentUserImage: currentUserImage,
+            onOpenProfile: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ProfileScreen(
+                    targetUserId: currentUserId,
+                    currentUserId: currentUserId,
+                    currentUserName: currentUserName,
+                    currentUserImage: currentUserImage,
+                  ),
+                ),
+              );
+            },
+            onOpenFriends: () {
+              Navigator.pop(context);
+              openFriendsScreen();
+            },
+            onOpenSettings: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              );
+            },
           ),
         );
       },
@@ -404,7 +430,7 @@ class _HomeScreenState extends State<HomeScreen>
             final velocity = details.primaryVelocity ?? 0;
 
             if (velocity > 350) {
-              openFriendsPanel();
+              openSideMenu();
             }
           },
           child: AnimatedWaveHomeBackground(
@@ -413,12 +439,24 @@ class _HomeScreenState extends State<HomeScreen>
               child: Column(
                 children: [
                   HomeHeader(
-                    onOpenMenu: openFriendsPanel,
+                    onOpenMenu: openSideMenu,
                     onOpenFriends: openFriendsScreen,
                     onOpenNotifications: openNotificationsScreen,
                     notificationService: notificationService,
                     roomService: roomService,
                     currentUserId: currentUserId,
+                    currentUserImage: currentUserImage,
+                    onOpenProfile: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ProfileScreen(
+                          targetUserId: currentUserId,
+                          currentUserId: currentUserId,
+                          currentUserName: currentUserName,
+                          currentUserImage: currentUserImage,
+                        ),
+                      ),
+                    ),
                   ),
                   const SearchBox(),
                   InvitedRoomsSection(
@@ -708,238 +746,62 @@ class InvitedRoomsSection extends StatelessWidget {
   }
 }
 
-class FriendsPanel extends StatelessWidget {
-  const FriendsPanel({
+class SideMenuPanel extends StatelessWidget {
+  const SideMenuPanel({
     super.key,
     required this.roomService,
     required this.currentUserId,
     required this.currentUserName,
     required this.currentUserImage,
+    required this.onOpenProfile,
+    required this.onOpenFriends,
+    required this.onOpenSettings,
   });
 
   final RoomService roomService;
   final String currentUserId;
   final String currentUserName;
   final String currentUserImage;
+  final VoidCallback onOpenProfile;
+  final VoidCallback onOpenFriends;
+  final VoidCallback onOpenSettings;
 
-  Widget _emptyText(String text) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Text(
-        text,
-        style: const TextStyle(color: Colors.white54),
-      ),
-    );
-  }
-
-  Widget _userTile({
-    required Map<String, dynamic> data,
-    required List<Widget> actions,
-  }) {
-    final name = (data['name'] ?? 'User').toString();
-    final image = (data['image'] ?? '').toString();
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.07),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.06)),
-      ),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundImage: image.isNotEmpty ? NetworkImage(image) : null,
-          child: image.isEmpty ? const Icon(Icons.person) : null,
-        ),
-        title: Text(
-          name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w900,
+  Future<void> _confirmSignOut(BuildContext context) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: const Color(0xFF1E1340),
+          title: const Text(
+            'تسجيل الخروج',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
           ),
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: actions,
-        ),
-      ),
-    );
-  }
-
-  Future<bool> _confirmRemoveFriend(BuildContext context, String name) async {
-    return await showDialog<bool>(
-          context: context,
-          builder: (ctx) => Directionality(
-            textDirection: TextDirection.rtl,
-            child: AlertDialog(
-              backgroundColor: const Color(0xFF21153E),
-              title: const Text(
-                'إزالة الصديق',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-              content: Text(
-                'هل أنت متأكد من إزالة $name من قائمة أصدقائك؟',
-                style: const TextStyle(color: Colors.white70),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('إلغاء', style: TextStyle(color: Colors.white54)),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('إزالة', style: TextStyle(color: Colors.redAccent)),
-                ),
-              ],
+          content: const Text(
+            'هل أنت متأكد من تسجيل الخروج؟',
+            style: TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('إلغاء', style: TextStyle(color: Colors.white54)),
             ),
-          ),
-        ) ??
-        false;
-  }
-
-  Widget _friendsList() {
-    return StreamBuilder(
-      stream: roomService.friendsStream(userId: currentUserId),
-      builder: (context, snapshot) {
-        final data = snapshot.data as dynamic;
-        final docs = data?.docs ?? [];
-
-        if (docs.isEmpty) return _emptyText('لا يوجد أصدقاء حتى الآن');
-
-        return Column(
-          children: docs.map<Widget>((doc) {
-            final item = doc.data() as Map<String, dynamic>;
-            final otherUserId = (item['userId'] ?? doc.id).toString();
-            final otherName = (item['name'] ?? 'User').toString();
-            final otherImage = (item['image'] ?? '').toString();
-            return _userTile(
-              data: item,
-              actions: [
-                IconButton(
-                  tooltip: 'رسالة خاصة',
-                  onPressed: () {
-                    Navigator.pop(context);
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => PrivateChatScreen(
-                          currentUserId: currentUserId,
-                          currentUserName: currentUserName,
-                          currentUserImage: currentUserImage,
-                          otherUserId: otherUserId,
-                          otherName: otherName,
-                          otherImage: otherImage,
-                        ),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.chat_bubble_outline_rounded, color: Colors.lightBlueAccent),
-                ),
-                IconButton(
-                  tooltip: 'إزالة الصديق',
-                  onPressed: () async {
-                    final confirmed = await _confirmRemoveFriend(context, otherName);
-                    if (!confirmed) return;
-                    await roomService.removeFriend(
-                      currentUserId: currentUserId,
-                      otherUserId: otherUserId,
-                    );
-                  },
-                  icon: const Icon(Icons.person_remove_rounded, color: Colors.redAccent),
-                ),
-              ],
-            );
-          }).toList(),
-        );
-      },
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('خروج'),
+            ),
+          ],
+        ),
+      ),
     );
-  }
 
-  Widget _incomingRequests() {
-    return StreamBuilder(
-      stream: roomService.incomingFriendRequestsStream(userId: currentUserId),
-      builder: (context, snapshot) {
-        final data = snapshot.data as dynamic;
-        final docs = data?.docs ?? [];
-
-        if (docs.isEmpty) return _emptyText('لا توجد طلبات واردة');
-
-        return Column(
-          children: docs.map<Widget>((doc) {
-            final item = doc.data() as Map<String, dynamic>;
-            final otherUserId = (item['userId'] ?? doc.id).toString();
-            final otherName = (item['name'] ?? 'User').toString();
-            final otherImage = (item['image'] ?? '').toString();
-
-            return _userTile(
-              data: item,
-              actions: [
-                IconButton(
-                  tooltip: 'قبول',
-                  onPressed: () async {
-                    await roomService.acceptFriendRequest(
-                      currentUserId: currentUserId,
-                      currentName: currentUserName,
-                      currentImage: currentUserImage,
-                      otherUserId: otherUserId,
-                      otherName: otherName,
-                      otherImage: otherImage,
-                    );
-                  },
-                  icon: const Icon(Icons.check_circle_rounded, color: Colors.greenAccent),
-                ),
-                IconButton(
-                  tooltip: 'رفض',
-                  onPressed: () async {
-                    await roomService.rejectFriendRequest(
-                      currentUserId: currentUserId,
-                      otherUserId: otherUserId,
-                    );
-                  },
-                  icon: const Icon(Icons.cancel_rounded, color: Colors.redAccent),
-                ),
-              ],
-            );
-          }).toList(),
-        );
-      },
-    );
-  }
-
-  Widget _sentRequests() {
-    return StreamBuilder(
-      stream: roomService.sentFriendRequestsStream(userId: currentUserId),
-      builder: (context, snapshot) {
-        final data = snapshot.data as dynamic;
-        final docs = data?.docs ?? [];
-
-        if (docs.isEmpty) return _emptyText('لا توجد طلبات مرسلة');
-
-        return Column(
-          children: docs.map<Widget>((doc) {
-            final item = doc.data() as Map<String, dynamic>;
-            final otherUserId = (item['userId'] ?? doc.id).toString();
-            return _userTile(
-              data: item,
-              actions: [
-                IconButton(
-                  tooltip: 'سحب الطلب',
-                  onPressed: () async {
-                    await roomService.cancelFriendRequest(
-                      fromUserId: currentUserId,
-                      toUserId: otherUserId,
-                    );
-                  },
-                  icon: const Icon(Icons.undo_rounded, color: Colors.orangeAccent),
-                ),
-              ],
-            );
-          }).toList(),
-        );
-      },
-    );
+    if (confirm == true) {
+      await FirebaseAuth.instance.signOut();
+    }
   }
 
   @override
@@ -947,9 +809,8 @@ class FriendsPanel extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: Container(
-        width: 360,
+        width: 300,
         height: double.infinity,
-        padding: const EdgeInsets.fromLTRB(18, 72, 18, 22),
         decoration: BoxDecoration(
           color: const Color(0xFF17112F).withOpacity(0.98),
           border: Border(
@@ -958,64 +819,117 @@ class FriendsPanel extends StatelessWidget {
         ),
         child: Directionality(
           textDirection: TextDirection.rtl,
-          child: DefaultTabController(
-            length: 3,
+          child: SafeArea(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 24,
-                      backgroundImage: NetworkImage(currentUserImage),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        currentUserName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close_rounded, color: Colors.white70),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                const Text(
-                  'قائمة الأصدقاء',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 23,
-                    fontWeight: FontWeight.w900,
+                // Close button
+                Align(
+                  alignment: Alignment.topLeft,
+                  child: IconButton(
+                    onPressed: () => Navigator.pop(context),
+                    icon: const Icon(Icons.close_rounded, color: Colors.white70),
                   ),
                 ),
-                const SizedBox(height: 14),
-                const TabBar(
-                  labelColor: Colors.white,
-                  unselectedLabelColor: Colors.white54,
-                  indicatorColor: Colors.white,
-                  tabs: [
-                    Tab(text: 'الأصدقاء'),
-                    Tab(text: 'واردة'),
-                    Tab(text: 'مرسلة'),
-                  ],
+
+                // Profile header — tap to open profile
+                GestureDetector(
+                  onTap: onOpenProfile,
+                  child: Container(
+                    margin: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white.withOpacity(0.10)),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: const Color(0xFF7B3FE4),
+                              width: 2,
+                            ),
+                          ),
+                          child: CircleAvatar(
+                            radius: 28,
+                            backgroundImage: currentUserImage.isNotEmpty
+                                ? NetworkImage(currentUserImage)
+                                : null,
+                            backgroundColor: const Color(0xFF2D1F5E),
+                            child: currentUserImage.isEmpty
+                                ? const Icon(Icons.person,
+                                    color: Colors.white54, size: 28)
+                                : null,
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                currentUserName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              const Text(
+                                'عرض الملف الشخصي',
+                                style: TextStyle(
+                                  color: Color(0xFF7B3FE4),
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Icon(Icons.chevron_left_rounded,
+                            color: Colors.white30, size: 20),
+                      ],
+                    ),
+                  ),
                 ),
-                const SizedBox(height: 12),
-                Expanded(
-                  child: TabBarView(
+
+                // Menu items
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
                     children: [
-                      SingleChildScrollView(child: _friendsList()),
-                      SingleChildScrollView(child: _incomingRequests()),
-                      SingleChildScrollView(child: _sentRequests()),
+                      _MenuItem(
+                        icon: Icons.people_alt_rounded,
+                        label: 'الأصدقاء',
+                        color: const Color(0xFF1E88E5),
+                        onTap: onOpenFriends,
+                      ),
+                      const SizedBox(height: 10),
+                      _MenuItem(
+                        icon: Icons.settings_rounded,
+                        label: 'الإعدادات',
+                        color: Colors.white70,
+                        onTap: onOpenSettings,
+                      ),
                     ],
+                  ),
+                ),
+
+                const Spacer(),
+
+                // Logout button
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: _MenuItem(
+                    icon: Icons.logout_rounded,
+                    label: 'تسجيل الخروج',
+                    color: Colors.redAccent,
+                    onTap: () => _confirmSignOut(context),
                   ),
                 ),
               ],
@@ -1027,45 +941,45 @@ class FriendsPanel extends StatelessWidget {
   }
 }
 
-class _FriendPanelButton extends StatelessWidget {
-  const _FriendPanelButton({
+class _MenuItem extends StatelessWidget {
+  const _MenuItem({
     required this.icon,
-    required this.title,
-    required this.subtitle,
+    required this.label,
+    required this.color,
     required this.onTap,
   });
 
   final IconData icon;
-  final String title;
-  final String subtitle;
+  final String label;
+  final Color color;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.07),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.white.withOpacity(0.06)),
-      ),
-      child: ListTile(
-        onTap: onTap,
-        leading: Icon(icon, color: Colors.white, size: 28),
-        title: Text(
-          title,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w900,
-          ),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: color.withOpacity(0.18)),
         ),
-        subtitle: Text(
-          subtitle,
-          style: const TextStyle(color: Colors.white54),
-        ),
-        trailing: const Icon(
-          Icons.chevron_left_rounded,
-          color: Colors.white54,
+        child: Row(
+          children: [
+            Icon(icon, color: color, size: 24),
+            const SizedBox(width: 14),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const Spacer(),
+            Icon(Icons.chevron_left_rounded, color: color.withOpacity(0.5), size: 20),
+          ],
         ),
       ),
     );
@@ -1197,6 +1111,8 @@ class HomeHeader extends StatelessWidget {
     required this.notificationService,
     required this.currentUserId,
     required this.roomService,
+    required this.currentUserImage,
+    required this.onOpenProfile,
   });
 
   final VoidCallback onOpenMenu;
@@ -1205,19 +1121,43 @@ class HomeHeader extends StatelessWidget {
   final NotificationService notificationService;
   final RoomService roomService;
   final String currentUserId;
+  final String currentUserImage;
+  final VoidCallback onOpenProfile;
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+      padding: const EdgeInsets.fromLTRB(12, 14, 18, 8),
       child: Row(
         children: [
+          GestureDetector(
+            onTap: onOpenMenu,
+            onLongPress: onOpenProfile,
+            child: Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white24, width: 2),
+              ),
+              child: CircleAvatar(
+                backgroundImage: currentUserImage.isNotEmpty
+                    ? NetworkImage(currentUserImage)
+                    : null,
+                backgroundColor: const Color(0xFF2D1F5E),
+                child: currentUserImage.isEmpty
+                    ? const Icon(Icons.person, color: Colors.white54, size: 22)
+                    : null,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
           IconButton(
             onPressed: onOpenMenu,
             icon: const Icon(
               Icons.menu_rounded,
-              size: 32,
-              color: Colors.white,
+              size: 28,
+              color: Colors.white70,
             ),
           ),
           const Spacer(),
