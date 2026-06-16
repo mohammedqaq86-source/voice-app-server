@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 
 class RoomService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -1194,6 +1196,81 @@ class RoomService {
         .collection('profileVisitors')
         .orderBy('visitTime', descending: true)
         .snapshots();
+  }
+
+  // ─── Profile Photos ───────────────────────────────────────────────────────
+
+  Future<String> uploadProfileImage({
+    required String uid,
+    required Uint8List imageBytes,
+    required String fileName,
+  }) async {
+    final ref = FirebaseStorage.instance.ref('profileImages/$uid/$fileName');
+    await ref.putData(imageBytes, SettableMetadata(contentType: 'image/jpeg'));
+    return ref.getDownloadURL();
+  }
+
+  Future<void> addProfilePhoto({
+    required String uid,
+    required String url,
+    required String visibility,
+  }) async {
+    await _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('profilePhotos')
+        .add({
+      'url': url,
+      'visibility': visibility,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  Future<void> updateProfilePhotoVisibility({
+    required String uid,
+    required String photoId,
+    required String visibility,
+  }) async {
+    await _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('profilePhotos')
+        .doc(photoId)
+        .update({'visibility': visibility});
+  }
+
+  Future<void> deleteProfilePhoto({
+    required String uid,
+    required String photoId,
+  }) async {
+    final doc = await _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('profilePhotos')
+        .doc(photoId)
+        .get();
+    final url = doc.data()?['url'] as String? ?? '';
+    await doc.reference.delete();
+    if (url.isNotEmpty) {
+      try {
+        await FirebaseStorage.instance.refFromURL(url).delete();
+      } catch (_) {}
+    }
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> profilePhotosStream(
+    String uid, {
+    bool isOwner = false,
+  }) {
+    var query = _firestore
+        .collection('users')
+        .doc(uid)
+        .collection('profilePhotos')
+        .orderBy('createdAt', descending: true);
+    if (!isOwner) {
+      return query.where('visibility', isEqualTo: 'public').snapshots();
+    }
+    return query.snapshots();
   }
 
   Stream<int> friendsCountStream(String uid) {

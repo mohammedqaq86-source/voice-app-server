@@ -1,8 +1,10 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../services/room_service.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -30,6 +32,15 @@ class _ProfileScreenState extends State<ProfileScreen>
   final RoomService roomService = RoomService();
   late final AnimationController _bgController;
 
+  final _bioCtrl = TextEditingController();
+  final _bioFocus = FocusNode();
+  bool _editingBio = false;
+  bool _savingBio = false;
+  bool _uploadingAvatar = false;
+
+  bool _selectMode = false;
+  final Set<String> _selectedPhotoIds = {};
+
   bool _visitRecorded = false;
 
   @override
@@ -40,6 +51,12 @@ class _ProfileScreenState extends State<ProfileScreen>
       duration: const Duration(seconds: 14),
     )..repeat(reverse: true);
 
+    _bioFocus.addListener(() {
+      if (!_bioFocus.hasFocus && _editingBio) {
+        _saveBio();
+      }
+    });
+
     if (!widget.isOwnProfile) {
       _recordVisit();
     }
@@ -48,6 +65,8 @@ class _ProfileScreenState extends State<ProfileScreen>
   @override
   void dispose() {
     _bgController.dispose();
+    _bioCtrl.dispose();
+    _bioFocus.dispose();
     super.dispose();
   }
 
@@ -62,11 +81,158 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
+  Future<void> _saveBio() async {
+    if (!mounted) return;
+    setState(() {
+      _editingBio = false;
+      _savingBio = true;
+    });
+    await roomService.updateUserProfile(
+      uid: widget.targetUserId,
+      bio: _bioCtrl.text.trim(),
+    );
+    if (mounted) setState(() => _savingBio = false);
+  }
+
+  Future<void> _pickAndUploadAvatar() async {
+    final picker = ImagePicker();
+    final XFile? file = await picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 512,
+      maxHeight: 512,
+      imageQuality: 80,
+    );
+    if (file == null || !mounted) return;
+    setState(() => _uploadingAvatar = true);
+    try {
+      final Uint8List bytes = await file.readAsBytes();
+      final url = await roomService.uploadProfileImage(
+        uid: widget.targetUserId,
+        imageBytes: bytes,
+        fileName: 'avatar_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      );
+      await roomService.updateUserProfile(
+        uid: widget.targetUserId,
+        photoUrl: url,
+      );
+      await FirebaseAuth.instance.currentUser?.updatePhotoURL(url);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل رفع الصورة: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _uploadingAvatar = false);
+    }
+  }
+
+  Future<void> _pickAndAddPhoto() async {
+    final picker = ImagePicker();
+    final XFile? file = await picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1024,
+      maxHeight: 1024,
+      imageQuality: 85,
+    );
+    if (file == null || !mounted) return;
+
+    final visibility = await _askVisibility();
+    if (visibility == null || !mounted) return;
+
+    try {
+      final Uint8List bytes = await file.readAsBytes();
+      final url = await roomService.uploadProfileImage(
+        uid: widget.targetUserId,
+        imageBytes: bytes,
+        fileName: 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      );
+      await roomService.addProfilePhoto(
+        uid: widget.targetUserId,
+        url: url,
+        visibility: visibility,
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('فشل إضافة الصورة: $e')),
+        );
+      }
+    }
+  }
+
+  Future<String?> _askVisibility() {
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          backgroundColor: const Color(0xFF1E1340),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text(
+            'خصوصية الصورة',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.public, color: Colors.greenAccent, size: 20),
+                ),
+                title: const Text('عام', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                subtitle: const Text('يراها الجميع', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                onTap: () => Navigator.pop(ctx, 'public'),
+              ),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.lock, color: Colors.orangeAccent, size: 20),
+                ),
+                title: const Text('خاص', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                subtitle: const Text('أنت فقط تراها', style: TextStyle(color: Colors.white38, fontSize: 12)),
+                onTap: () => Navigator.pop(ctx, 'private'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _applySelectionAction(String action) async {
+    final ids = List<String>.from(_selectedPhotoIds);
+    setState(() {
+      _selectMode = false;
+      _selectedPhotoIds.clear();
+    });
+    for (final id in ids) {
+      if (action == 'delete') {
+        await roomService.deleteProfilePhoto(
+            uid: widget.targetUserId, photoId: id);
+      } else {
+        await roomService.updateProfilePhotoVisibility(
+          uid: widget.targetUserId,
+          photoId: id,
+          visibility: action,
+        );
+      }
+    }
+  }
+
   void _showEditDialog(Map<String, dynamic> profile) {
     final nameCtrl = TextEditingController(text: profile['name'] ?? '');
-    final usernameCtrl = TextEditingController(text: profile['username'] ?? '');
-    final bioCtrl = TextEditingController(text: profile['bio'] ?? '');
-    final countryCtrl = TextEditingController(text: profile['country'] ?? '');
+    final usernameCtrl =
+        TextEditingController(text: profile['username'] ?? '');
 
     showDialog(
       context: context,
@@ -74,28 +240,27 @@ class _ProfileScreenState extends State<ProfileScreen>
         textDirection: TextDirection.rtl,
         child: AlertDialog(
           backgroundColor: const Color(0xFF1E1340),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           title: const Text(
             'تعديل الملف الشخصي',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
+            style:
+                TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
           ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _editField(nameCtrl, 'الاسم', Icons.person_rounded),
-                const SizedBox(height: 12),
-                _editField(usernameCtrl, 'المعرف (@username)', Icons.alternate_email_rounded),
-                const SizedBox(height: 12),
-                _editField(bioCtrl, 'نبذة شخصية', Icons.info_outline_rounded, maxLines: 3),
-                const SizedBox(height: 12),
-                _editField(countryCtrl, 'الدولة', Icons.flag_rounded),
-              ],
-            ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _editField(nameCtrl, 'الاسم', Icons.person_rounded),
+              const SizedBox(height: 12),
+              _editField(usernameCtrl, 'المعرف (@username)',
+                  Icons.alternate_email_rounded),
+            ],
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text('إلغاء', style: TextStyle(color: Colors.white54)),
+              child: const Text('إلغاء',
+                  style: TextStyle(color: Colors.white54)),
             ),
             ElevatedButton(
               style: ElevatedButton.styleFrom(
@@ -108,10 +273,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                   uid: widget.targetUserId,
                   name: nameCtrl.text.trim(),
                   username: usernameCtrl.text.trim(),
-                  bio: bioCtrl.text.trim(),
-                  country: countryCtrl.text.trim(),
                 );
-                // Sync Firebase Auth display name
                 if (nameCtrl.text.trim().isNotEmpty) {
                   await FirebaseAuth.instance.currentUser
                       ?.updateDisplayName(nameCtrl.text.trim());
@@ -191,11 +353,13 @@ class _ProfileScreenState extends State<ProfileScreen>
               const SizedBox(height: 12),
               Expanded(
                 child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: roomService.profileVisitorsStream(widget.targetUserId),
+                  stream:
+                      roomService.profileVisitorsStream(widget.targetUserId),
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(
-                        child: CircularProgressIndicator(color: Colors.white),
+                        child:
+                            CircularProgressIndicator(color: Colors.white),
                       );
                     }
                     final docs = snapshot.data?.docs ?? [];
@@ -213,17 +377,22 @@ class _ProfileScreenState extends State<ProfileScreen>
                       itemCount: docs.length,
                       itemBuilder: (context, i) {
                         final data = docs[i].data();
-                        final name = (data['visitorName'] ?? 'مستخدم').toString();
-                        final image = (data['visitorImage'] ?? '').toString();
-                        final time = (data['visitTime'] as Timestamp?)?.toDate();
+                        final name =
+                            (data['visitorName'] ?? 'مستخدم').toString();
+                        final image =
+                            (data['visitorImage'] ?? '').toString();
+                        final time =
+                            (data['visitTime'] as Timestamp?)?.toDate();
                         return ListTile(
                           leading: CircleAvatar(
-                            backgroundImage:
-                                image.isNotEmpty ? NetworkImage(image) : null,
-                            child: image.isEmpty
-                                ? const Icon(Icons.person, color: Colors.white)
+                            backgroundImage: image.isNotEmpty
+                                ? NetworkImage(image)
                                 : null,
                             backgroundColor: const Color(0xFF2D1F5E),
+                            child: image.isEmpty
+                                ? const Icon(Icons.person,
+                                    color: Colors.white)
+                                : null,
                           ),
                           title: Text(
                             name,
@@ -235,7 +404,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                           subtitle: time != null
                               ? Text(
                                   _formatTime(time),
-                                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                                  style: const TextStyle(
+                                      color: Colors.white54, fontSize: 12),
                                 )
                               : null,
                         );
@@ -274,19 +444,21 @@ class _ProfileScreenState extends State<ProfileScreen>
                 stream: roomService.userProfileStream(widget.targetUserId),
                 builder: (context, snapshot) {
                   final profile = snapshot.data?.data() ?? {};
-                  final name = (profile['name'] ?? widget.currentUserName).toString();
+                  final name =
+                      (profile['name'] ?? widget.currentUserName).toString();
                   final username = (profile['username'] ?? '').toString();
                   final bio = (profile['bio'] ?? '').toString();
-                  final country = (profile['country'] ?? '').toString();
                   final photoUrl = (profile['photoUrl'] ?? '').toString();
-                  final visitCount = (profile['visitCount'] ?? 0) as int;
-                  final joinedAt = (profile['joinedAt'] as Timestamp?)?.toDate();
+
+                  if (!_editingBio && _bioCtrl.text != bio) {
+                    _bioCtrl.text = bio;
+                  }
 
                   return Column(
                     children: [
                       // AppBar
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
+                        padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
                         child: Row(
                           children: [
                             IconButton(
@@ -304,24 +476,46 @@ class _ProfileScreenState extends State<ProfileScreen>
                               ),
                             ),
                             const Spacer(),
-                            if (widget.isOwnProfile)
+                            if (widget.isOwnProfile) ...[
+                              IconButton(
+                                onPressed: () =>
+                                    _showVisitorsList(context),
+                                icon: const Icon(
+                                    Icons.remove_red_eye_rounded,
+                                    color: Colors.white70),
+                                tooltip: 'زوار ملفي',
+                              ),
                               IconButton(
                                 onPressed: () => _showEditDialog(profile),
                                 icon: const Icon(Icons.edit_rounded,
                                     color: Colors.white70),
-                              )
-                            else
+                                tooltip: 'تعديل',
+                              ),
+                            ] else
                               const SizedBox(width: 48),
                           ],
                         ),
                       ),
+
+                      // Selection action bar
+                      if (_selectMode)
+                        _SelectionBar(
+                          count: _selectedPhotoIds.length,
+                          onDelete: () => _applySelectionAction('delete'),
+                          onPublic: () => _applySelectionAction('public'),
+                          onPrivate: () => _applySelectionAction('private'),
+                          onCancel: () => setState(() {
+                            _selectMode = false;
+                            _selectedPhotoIds.clear();
+                          }),
+                        ),
 
                       Expanded(
                         child: SingleChildScrollView(
                           padding: const EdgeInsets.all(20),
                           child: Column(
                             children: [
-                              // Profile photo + name
+                              // Avatar + camera button
                               Stack(
                                 alignment: Alignment.bottomRight,
                                 children: [
@@ -336,34 +530,46 @@ class _ProfileScreenState extends State<ProfileScreen>
                                       ),
                                       boxShadow: [
                                         BoxShadow(
-                                          color: const Color(0xFF7B3FE4).withOpacity(0.4),
+                                          color: const Color(0xFF7B3FE4)
+                                              .withOpacity(0.4),
                                           blurRadius: 20,
                                           spreadRadius: 2,
                                         ),
                                       ],
                                     ),
-                                    child: CircleAvatar(
-                                      radius: 52,
-                                      backgroundImage: photoUrl.isNotEmpty
-                                          ? NetworkImage(photoUrl)
-                                          : null,
-                                      backgroundColor: const Color(0xFF2D1F5E),
-                                      child: photoUrl.isEmpty
-                                          ? const Icon(Icons.person, size: 54, color: Colors.white54)
-                                          : null,
-                                    ),
+                                    child: _uploadingAvatar
+                                        ? const Center(
+                                            child: CircularProgressIndicator(
+                                                color: Colors.white,
+                                                strokeWidth: 2))
+                                        : CircleAvatar(
+                                            radius: 52,
+                                            backgroundImage:
+                                                photoUrl.isNotEmpty
+                                                    ? NetworkImage(photoUrl)
+                                                    : null,
+                                            backgroundColor:
+                                                const Color(0xFF2D1F5E),
+                                            child: photoUrl.isEmpty
+                                                ? const Icon(Icons.person,
+                                                    size: 54,
+                                                    color: Colors.white54)
+                                                : null,
+                                          ),
                                   ),
                                   if (widget.isOwnProfile)
                                     GestureDetector(
-                                      onTap: () => _showEditDialog(profile),
+                                      onTap: _pickAndUploadAvatar,
                                       child: Container(
-                                        padding: const EdgeInsets.all(6),
+                                        padding: const EdgeInsets.all(7),
                                         decoration: const BoxDecoration(
                                           color: Color(0xFF7B3FE4),
                                           shape: BoxShape.circle,
                                         ),
-                                        child: const Icon(Icons.camera_alt_rounded,
-                                            color: Colors.white, size: 16),
+                                        child: const Icon(
+                                            Icons.camera_alt_rounded,
+                                            color: Colors.white,
+                                            size: 16),
                                       ),
                                     ),
                                 ],
@@ -392,60 +598,39 @@ class _ProfileScreenState extends State<ProfileScreen>
                                 ),
                               ],
 
-                              if (bio.isNotEmpty) ...[
-                                const SizedBox(height: 10),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 18, vertical: 10),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.06),
-                                    borderRadius: BorderRadius.circular(14),
-                                    border: Border.all(
-                                        color: Colors.white.withOpacity(0.08)),
-                                  ),
-                                  child: Text(
-                                    bio,
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 14,
-                                      height: 1.5,
-                                    ),
-                                  ),
-                                ),
-                              ],
+                              const SizedBox(height: 14),
 
-                              const SizedBox(height: 16),
-
-                              // Info chips
-                              Wrap(
-                                spacing: 10,
-                                runSpacing: 10,
-                                alignment: WrapAlignment.center,
-                                children: [
-                                  if (country.isNotEmpty)
-                                    _InfoChip(
-                                      icon: Icons.flag_rounded,
-                                      label: country,
-                                    ),
-                                  if (joinedAt != null)
-                                    _InfoChip(
-                                      icon: Icons.calendar_today_rounded,
-                                      label:
-                                          'انضم ${joinedAt.year}/${joinedAt.month}/${joinedAt.day}',
-                                    ),
-                                ],
+                              // Bio - inline editable
+                              _BioSection(
+                                bio: bio,
+                                isOwn: widget.isOwnProfile,
+                                editing: _editingBio,
+                                saving: _savingBio,
+                                controller: _bioCtrl,
+                                focusNode: _bioFocus,
+                                onTap: () {
+                                  if (widget.isOwnProfile && !_editingBio) {
+                                    _bioCtrl.text = bio;
+                                    setState(() => _editingBio = true);
+                                    Future.delayed(
+                                      const Duration(milliseconds: 50),
+                                      () => _bioFocus.requestFocus(),
+                                    );
+                                  }
+                                },
+                                onSave: _saveBio,
                               ),
 
-                              const SizedBox(height: 24),
+                              const SizedBox(height: 18),
 
-                              // Stats row
+                              // Stats row (friends + rooms only)
                               Row(
                                 children: [
                                   Expanded(
                                     child: StreamBuilder<int>(
-                                      stream: roomService.friendsCountStream(
-                                          widget.targetUserId),
+                                      stream: roomService
+                                          .friendsCountStream(
+                                              widget.targetUserId),
                                       builder: (ctx, snap) => _StatCard(
                                         icon: Icons.people_rounded,
                                         value: '${snap.data ?? 0}',
@@ -457,8 +642,9 @@ class _ProfileScreenState extends State<ProfileScreen>
                                   const SizedBox(width: 12),
                                   Expanded(
                                     child: StreamBuilder<int>(
-                                      stream: roomService.createdRoomsCountStream(
-                                          widget.targetUserId),
+                                      stream: roomService
+                                          .createdRoomsCountStream(
+                                              widget.targetUserId),
                                       builder: (ctx, snap) => _StatCard(
                                         icon: Icons.mic_rounded,
                                         value: '${snap.data ?? 0}',
@@ -467,29 +653,13 @@ class _ProfileScreenState extends State<ProfileScreen>
                                       ),
                                     ),
                                   ),
-                                  const SizedBox(width: 12),
-                                  // Eye / visitors card
-                                  Expanded(
-                                    child: GestureDetector(
-                                      onTap: widget.isOwnProfile
-                                          ? () => _showVisitorsList(context)
-                                          : null,
-                                      child: _StatCard(
-                                        icon: Icons.remove_red_eye_rounded,
-                                        value: '$visitCount',
-                                        label: 'زيارة',
-                                        color: const Color(0xFFFFA000),
-                                        tappable: widget.isOwnProfile,
-                                      ),
-                                    ),
-                                  ),
                                 ],
                               ),
 
                               const SizedBox(height: 24),
 
-                              // Action buttons (for other user's profile)
-                              if (!widget.isOwnProfile) ...[
+                              // Add friend (other profile)
+                              if (!widget.isOwnProfile)
                                 _ActionButton(
                                   icon: Icons.person_add_rounded,
                                   label: 'إضافة صديق',
@@ -504,88 +674,39 @@ class _ProfileScreenState extends State<ProfileScreen>
                                       toImage: photoUrl,
                                     );
                                     if (mounted) {
-                                      ScaffoldMessenger.of(context).showSnackBar(
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
                                         const SnackBar(
-                                            content: Text('تم إرسال طلب الصداقة')),
+                                            content: Text(
+                                                'تم إرسال طلب الصداقة')),
                                       );
                                     }
                                   },
                                 ),
-                              ],
 
-                              if (widget.isOwnProfile) ...[
-                                const SizedBox(height: 8),
-                                // Visitors preview section
-                                _SectionHeader(
-                                  title: 'زوار ملفي 👁',
-                                  onTap: () => _showVisitorsList(context),
-                                ),
-                                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                                  stream: roomService.profileVisitorsStream(
-                                      widget.targetUserId),
-                                  builder: (context, snapshot) {
-                                    final docs = snapshot.data?.docs ?? [];
-                                    if (docs.isEmpty) {
-                                      return Padding(
-                                        padding: const EdgeInsets.symmetric(vertical: 12),
-                                        child: Text(
-                                          'لم يزر ملفك أحد بعد',
-                                          style: TextStyle(
-                                              color: Colors.white.withOpacity(0.4)),
-                                        ),
-                                      );
+                              // Profile photos section
+                              _PhotosSection(
+                                uid: widget.targetUserId,
+                                isOwn: widget.isOwnProfile,
+                                roomService: roomService,
+                                selectMode: _selectMode,
+                                selectedIds: _selectedPhotoIds,
+                                onAddPhoto: _pickAndAddPhoto,
+                                onLongPress: (id) => setState(() {
+                                  _selectMode = true;
+                                  _selectedPhotoIds.add(id);
+                                }),
+                                onTapInSelect: (id) => setState(() {
+                                  if (_selectedPhotoIds.contains(id)) {
+                                    _selectedPhotoIds.remove(id);
+                                    if (_selectedPhotoIds.isEmpty) {
+                                      _selectMode = false;
                                     }
-                                    return SizedBox(
-                                      height: 70,
-                                      child: ListView.builder(
-                                        scrollDirection: Axis.horizontal,
-                                        itemCount: docs.length > 10 ? 10 : docs.length,
-                                        itemBuilder: (_, i) {
-                                          final data = docs[i].data();
-                                          final img =
-                                              (data['visitorImage'] ?? '').toString();
-                                          final vName =
-                                              (data['visitorName'] ?? '').toString();
-                                          return Padding(
-                                            padding:
-                                                const EdgeInsets.only(left: 10),
-                                            child: Column(
-                                              children: [
-                                                CircleAvatar(
-                                                  radius: 24,
-                                                  backgroundImage: img.isNotEmpty
-                                                      ? NetworkImage(img)
-                                                      : null,
-                                                  backgroundColor:
-                                                      const Color(0xFF2D1F5E),
-                                                  child: img.isEmpty
-                                                      ? const Icon(Icons.person,
-                                                          color: Colors.white54)
-                                                      : null,
-                                                ),
-                                                const SizedBox(height: 4),
-                                                SizedBox(
-                                                  width: 52,
-                                                  child: Text(
-                                                    vName,
-                                                    maxLines: 1,
-                                                    overflow: TextOverflow.ellipsis,
-                                                    textAlign: TextAlign.center,
-                                                    style: const TextStyle(
-                                                      color: Colors.white60,
-                                                      fontSize: 10,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ],
+                                  } else {
+                                    _selectedPhotoIds.add(id);
+                                  }
+                                }),
+                              ),
                             ],
                           ),
                         ),
@@ -602,29 +723,318 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 }
 
-class _InfoChip extends StatelessWidget {
-  const _InfoChip({required this.icon, required this.label});
+// ─── Bio Section ─────────────────────────────────────────────────────────────
 
-  final IconData icon;
-  final String label;
+class _BioSection extends StatelessWidget {
+  const _BioSection({
+    required this.bio,
+    required this.isOwn,
+    required this.editing,
+    required this.saving,
+    required this.controller,
+    required this.focusNode,
+    required this.onTap,
+    required this.onSave,
+  });
+
+  final String bio;
+  final bool isOwn;
+  final bool editing;
+  final bool saving;
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final VoidCallback onTap;
+  final VoidCallback onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isOwn && bio.isEmpty) return const SizedBox.shrink();
+
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        width: double.infinity,
+        constraints: const BoxConstraints(minHeight: 48),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: editing
+                ? const Color(0xFF7B3FE4)
+                : Colors.white.withOpacity(0.08),
+          ),
+        ),
+        child: saving
+            ? const Center(
+                child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white38),
+                ),
+              )
+            : editing
+                ? TextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    maxLines: null,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 14, height: 1.5),
+                    decoration: const InputDecoration(
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.zero,
+                      isDense: true,
+                    ),
+                    onSubmitted: (_) => onSave(),
+                  )
+                : Text(
+                    bio.isEmpty ? 'اكتب نبذة عنك...' : bio,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: bio.isEmpty ? Colors.white30 : Colors.white70,
+                      fontSize: 14,
+                      height: 1.5,
+                    ),
+                  ),
+      ),
+    );
+  }
+}
+
+// ─── Photos Section ───────────────────────────────────────────────────────────
+
+class _PhotosSection extends StatelessWidget {
+  const _PhotosSection({
+    required this.uid,
+    required this.isOwn,
+    required this.roomService,
+    required this.selectMode,
+    required this.selectedIds,
+    required this.onAddPhoto,
+    required this.onLongPress,
+    required this.onTapInSelect,
+  });
+
+  final String uid;
+  final bool isOwn;
+  final RoomService roomService;
+  final bool selectMode;
+  final Set<String> selectedIds;
+  final VoidCallback onAddPhoto;
+  final void Function(String id) onLongPress;
+  final void Function(String id) onTapInSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            const Text(
+              'الصور',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const Spacer(),
+            if (isOwn)
+              GestureDetector(
+                onTap: onAddPhoto,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF7B3FE4).withOpacity(0.18),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: const Color(0xFF7B3FE4).withOpacity(0.4)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.add_photo_alternate_rounded,
+                          color: Color(0xFF7B3FE4), size: 16),
+                      SizedBox(width: 4),
+                      Text('إضافة',
+                          style: TextStyle(
+                              color: Color(0xFF7B3FE4),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: roomService.profilePhotosStream(uid, isOwner: isOwn),
+          builder: (context, snapshot) {
+            final docs = snapshot.data?.docs ?? [];
+
+            if (docs.isEmpty) {
+              if (!isOwn) return const SizedBox.shrink();
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child: Column(
+                    children: [
+                      Icon(Icons.photo_library_outlined,
+                          color: Colors.white.withOpacity(0.2), size: 52),
+                      const SizedBox(height: 10),
+                      Text(
+                        'أضف صورك هنا',
+                        style: TextStyle(
+                            color: Colors.white.withOpacity(0.3),
+                            fontSize: 14),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            return GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 3,
+                crossAxisSpacing: 6,
+                mainAxisSpacing: 6,
+              ),
+              itemCount: docs.length,
+              itemBuilder: (_, i) {
+                final data = docs[i].data();
+                final url = (data['url'] as String?) ?? '';
+                final vis = (data['visibility'] as String?) ?? 'public';
+                final id = docs[i].id;
+                final isSelected = selectedIds.contains(id);
+
+                return GestureDetector(
+                  onLongPress: isOwn ? () => onLongPress(id) : null,
+                  onTap: (selectMode && isOwn) ? () => onTapInSelect(id) : null,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: url.isNotEmpty
+                            ? Image.network(url,
+                                fit: BoxFit.cover,
+                                loadingBuilder: (_, child, progress) =>
+                                    progress == null
+                                        ? child
+                                        : Container(
+                                            color: Colors.white.withOpacity(0.05),
+                                            child: const Center(
+                                              child: CircularProgressIndicator(
+                                                  strokeWidth: 2,
+                                                  color: Colors.white24),
+                                            ),
+                                          ))
+                            : Container(
+                                color: Colors.white.withOpacity(0.05)),
+                      ),
+                      if (isOwn && vis == 'private')
+                        Positioned(
+                          top: 5,
+                          right: 5,
+                          child: Container(
+                            padding: const EdgeInsets.all(3),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Icon(Icons.lock,
+                                color: Colors.orangeAccent, size: 12),
+                          ),
+                        ),
+                      if (selectMode && isSelected)
+                        Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF7B3FE4).withOpacity(0.55),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: const Color(0xFF7B3FE4), width: 2.5),
+                          ),
+                          child: const Center(
+                            child: Icon(Icons.check_circle_rounded,
+                                color: Colors.white, size: 30),
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        ),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+}
+
+// ─── Selection Bar ────────────────────────────────────────────────────────────
+
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar({
+    required this.count,
+    required this.onDelete,
+    required this.onPublic,
+    required this.onPrivate,
+    required this.onCancel,
+  });
+
+  final int count;
+  final VoidCallback onDelete;
+  final VoidCallback onPublic;
+  final VoidCallback onPrivate;
+  final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.07),
-        borderRadius: BorderRadius.circular(99),
-        border: Border.all(color: Colors.white.withOpacity(0.10)),
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      color: const Color(0xFF1E1340).withOpacity(0.95),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, color: Colors.white60, size: 16),
-          const SizedBox(width: 6),
           Text(
-            label,
-            style: const TextStyle(color: Colors.white70, fontSize: 13),
+            '$count مختار',
+            style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 13,
+                fontWeight: FontWeight.w700),
+          ),
+          const Spacer(),
+          TextButton.icon(
+            onPressed: onPublic,
+            icon: const Icon(Icons.public, size: 14, color: Colors.greenAccent),
+            label: const Text('عام',
+                style: TextStyle(color: Colors.greenAccent, fontSize: 12)),
+          ),
+          TextButton.icon(
+            onPressed: onPrivate,
+            icon: const Icon(Icons.lock, size: 14, color: Colors.orangeAccent),
+            label: const Text('خاص',
+                style: TextStyle(color: Colors.orangeAccent, fontSize: 12)),
+          ),
+          IconButton(
+            onPressed: onDelete,
+            icon: const Icon(Icons.delete_outline_rounded,
+                color: Colors.redAccent, size: 20),
+            tooltip: 'حذف',
+          ),
+          IconButton(
+            onPressed: onCancel,
+            icon: const Icon(Icons.close_rounded,
+                color: Colors.white54, size: 20),
           ),
         ],
       ),
@@ -632,20 +1042,20 @@ class _InfoChip extends StatelessWidget {
   }
 }
 
+// ─── Helper Widgets ───────────────────────────────────────────────────────────
+
 class _StatCard extends StatelessWidget {
   const _StatCard({
     required this.icon,
     required this.value,
     required this.label,
     required this.color,
-    this.tappable = false,
   });
 
   final IconData icon;
   final String value;
   final String label;
   final Color color;
-  final bool tappable;
 
   @override
   Widget build(BuildContext context) {
@@ -672,9 +1082,6 @@ class _StatCard extends StatelessWidget {
             label,
             style: const TextStyle(color: Colors.white60, fontSize: 12),
           ),
-          if (tappable)
-            Icon(Icons.keyboard_arrow_down_rounded,
-                color: color.withOpacity(0.6), size: 16),
         ],
       ),
     );
@@ -706,48 +1113,15 @@ class _ActionButton extends StatelessWidget {
           backgroundColor: color,
           foregroundColor: Colors.white,
           padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         ),
       ),
     );
   }
 }
 
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title, this.onTap});
-
-  final String title;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        child: Row(
-          children: [
-            Text(
-              title,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 17,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
-            const Spacer(),
-            const Text(
-              'عرض الكل',
-              style: TextStyle(color: Color(0xFF7B3FE4), fontSize: 13),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
+// ─── Background Painter ───────────────────────────────────────────────────────
 
 class _ProfileBgPainter extends CustomPainter {
   _ProfileBgPainter(this.value);

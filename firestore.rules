@@ -78,6 +78,16 @@ service cloud.firestore {
         allow update: if isSignedIn() && request.auth.uid == visitorId;
         allow delete: if isOwner(userId);
       }
+
+      // Profile photos: owner manages; others can only read public photos
+      match /profilePhotos/{photoId} {
+        allow read:   if isSignedIn() && (
+          isOwner(userId) || resource.data.visibility == 'public'
+        );
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId);
+        allow delete: if isOwner(userId);
+      }
     }
 
     // ─── Rooms ───────────────────────────────────────────────────────────────
