@@ -43,9 +43,14 @@ Stream<T> safeFirestoreStream<T>(Stream<T> source) {
   };
 
   controller.onCancel = () {
+    // Null out `sub` first so that if a new listener subscribes before the
+    // microtask fires, `onListen` can create a fresh Firestore subscription
+    // instead of early-returning on the stale (soon-to-be-cancelled) one.
+    final toCancel = sub;
+    sub = null;
     // Defer by one microtask so Firestore's onSnapshotUnsubscribe has time
     // to be initialized before we call it.
-    Future.microtask(() => sub?.cancel());
+    Future.microtask(() => toCancel?.cancel());
   };
 
   return controller.stream;

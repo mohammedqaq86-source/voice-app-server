@@ -32,9 +32,6 @@ class _HomeScreenState extends State<HomeScreen>
   late final AnimationController backgroundController;
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _publicRoomsStream;
 
-  // Caches per-room permission futures so we don't create a new Future (and
-  // restart the FutureBuilder) on every parent rebuild.
-  final Map<String, Future<bool>> _canShowRoomCache = {};
   // Tracks rooms already passed to closeRoomIfEmpty this session so we don't
   // hammer Firestore with redundant reads on every stream emission.
   final Set<String> _cleanedRoomIds = {};
@@ -150,12 +147,6 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Future<bool> canShowRoom(String roomId) {
-    return _canShowRoomCache.putIfAbsent(
-      roomId,
-      () => roomService.canUserEnterRoom(roomId: roomId, userId: currentUserId),
-    );
-  }
 
   void openSideMenu() {
     showGeneralDialog(
@@ -507,10 +498,19 @@ class _HomeScreenState extends State<HomeScreen>
                         final docs = snapshotData?.docs ?? [];
 
                         // Check each room once per session: if it has no real
-                        // members, close it. _cleanedRoomIds prevents redundant
-                        // Firestore reads on subsequent stream emissions.
+                        // members, close it. Skip rooms created in the last
+                        // 3 minutes — on web the Firestore SDK may deliver the
+                        // room document to the listener slightly before the
+                        // member sub-document is in the local cache, so a fresh
+                        // room could be wrongly seen as empty.
+                        final recentCutoff = DateTime.now()
+                            .subtract(const Duration(minutes: 3));
                         for (final doc in docs) {
-                          if (_cleanedRoomIds.add(doc.id)) {
+                          if (!_cleanedRoomIds.add(doc.id)) continue;
+                          final createdAt = doc.data()['createdAt'];
+                          final isRecent = createdAt is Timestamp &&
+                              createdAt.toDate().isAfter(recentCutoff);
+                          if (!isRecent) {
                             unawaited(roomService.closeRoomIfEmpty(doc.id));
                           }
                         }
@@ -556,26 +556,13 @@ class _HomeScreenState extends State<HomeScreen>
 
                             final room = roomFromFirestore(data, id: roomId);
 
-                            return FutureBuilder<bool>(
-                              future: canShowRoom(roomId),
-                              builder: (context, permissionSnapshot) {
-                                if (permissionSnapshot.connectionState ==
-                                    ConnectionState.waiting) {
-                                  return const SizedBox.shrink();
-                                }
-
-                                final canShow =
-                                    permissionSnapshot.data ?? false;
-
-                                if (!canShow) {
-                                  return const SizedBox.shrink();
-                                }
-
-                                return buildRoomCardWithPreview(
-                                  roomId: roomId,
-                                  room: room,
-                                );
-                              },
+                            // publicOpenRoomsStream already filters by
+                            // isOpen:true / isPrivate:false / isRealRoom:true.
+                            // No additional async permission check needed here;
+                            // kicked users see an error when they try to enter.
+                            return buildRoomCardWithPreview(
+                              roomId: roomId,
+                              room: room,
                             );
                           },
                         );

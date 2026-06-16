@@ -77,6 +77,9 @@ class _RoomScreenState extends State<RoomScreen>
   bool hasHandledRoomRemoval = false;
   bool _confirmedMembership = false;
   bool everyoneCanUseMic = false;
+  // Flipped to true (via setState) just before Navigator.pop so that
+  // PopScope allows the programmatic pop to proceed.
+  bool _canPopNow = false;
   bool _showUsersPanel = false;
 
   bool _lastKnownMicPermission = false;
@@ -388,7 +391,16 @@ class _RoomScreenState extends State<RoomScreen>
         roomId: widget.roomId,
         userId: currentUserId,
       );
-      if (mounted) Navigator.pop(context);
+      if (!mounted) return;
+      // PopScope has canPop:false to block the system back-button.
+      // A programmatic Navigator.pop() is ALSO intercepted by PopScope, so we
+      // must flip canPop to true (via setState → rebuild) BEFORE calling pop,
+      // otherwise the pop is silently swallowed and onPopInvokedWithResult fires
+      // confirmExitRoom() again in an infinite loop.
+      setState(() => _canPopNow = true);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) Navigator.pop(context);
+      });
     }
 
     // Skip the interstitial if the user was actively speaking —
@@ -1593,7 +1605,10 @@ class _RoomScreenState extends State<RoomScreen>
       const SnackBar(content: Text('You were removed from this room')),
     );
 
-    Navigator.pop(context);
+    setState(() => _canPopNow = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) Navigator.pop(context);
+    });
   }
 
   Widget _buildBannerAd() {
@@ -1619,8 +1634,11 @@ class _RoomScreenState extends State<RoomScreen>
   @override
   Widget build(BuildContext context) {
     return PopScope<Object?>(
-      canPop: false,
+      canPop: _canPopNow,
       onPopInvokedWithResult: (didPop, _) {
+        // Only show the exit dialog for SYSTEM-initiated pops (back button).
+        // Programmatic pops (Navigator.pop after leaveAndPop) arrive here with
+        // didPop:true once _canPopNow is true, so we ignore them.
         if (!didPop) unawaited(confirmExitRoom());
       },
       child: Directionality(

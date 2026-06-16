@@ -54,7 +54,17 @@ class RoomService {
     required String ownerName,
     required String ownerImage,
   }) async {
-    final doc = await _firestore.collection('rooms').add({
+    // Use a batch so the room doc and the owner's member doc are written
+    // atomically.  Any listener that receives the new room document will also
+    // see the member document in the same snapshot, eliminating the window
+    // where closeRoomIfEmpty could close the room before the first member
+    // is written.
+    final roomRef = _firestore.collection('rooms').doc();
+    final memberRef = roomRef.collection('members').doc(ownerId);
+
+    final batch = _firestore.batch();
+
+    batch.set(roomRef, {
       'title': title,
       'image': image,
       'videoId': videoId,
@@ -72,7 +82,7 @@ class RoomService {
       'lastOpenedAt': FieldValue.serverTimestamp(),
     });
 
-    await doc.collection('members').doc(ownerId).set({
+    batch.set(memberRef, {
       'userId': ownerId,
       'name': ownerName,
       'image': ownerImage,
@@ -84,16 +94,18 @@ class RoomService {
       'lastSeen': FieldValue.serverTimestamp(),
     });
 
-    await sendSystemMessage(
-      roomId: doc.id,
+    await batch.commit();
+
+    unawaited(sendSystemMessage(
+      roomId: roomRef.id,
       text: '$ownerName joined the room',
       userId: ownerId,
       name: ownerName,
       image: ownerImage,
       isLeader: true,
-    );
+    ));
 
-    return doc.id;
+    return roomRef.id;
   }
 
   Future<void> openRoom({required String roomId}) async {
@@ -532,6 +544,9 @@ class RoomService {
       return;
     }
 
+    final memberName = (memberDoc.data()?['name'] ?? 'User').toString();
+    final memberImage = (memberDoc.data()?['image'] ?? '').toString();
+
     // Check if the leaving user is the room owner → auto-transfer leadership
     final roomDoc = await roomRef.get();
     if (roomDoc.exists) {
@@ -560,6 +575,15 @@ class RoomService {
         'lastSeen': FieldValue.serverTimestamp(),
       },
       SetOptions(merge: true),
+    ));
+
+    // Send a system message so all participants see who left.
+    unawaited(sendSystemMessage(
+      roomId: roomId,
+      text: '$memberName left the room',
+      userId: userId,
+      name: memberName,
+      image: memberImage,
     ));
 
     // Auto-close room when last member leaves
@@ -725,9 +749,14 @@ class RoomService {
     final speakersCount =
         realMembers.where((doc) => doc.data()['isMicOn'] == true).length;
 
+    // Also ensure the room is marked open — guards against a race where the
+    // room was briefly seen as empty (e.g. by closeRoomIfEmpty) before all
+    // member writes landed.
     await roomRef.update({
+      'isOpen': true,
       'usersCount': realMembers.length,
       'speakersCount': speakersCount,
+      'updatedAt': FieldValue.serverTimestamp(),
     });
   }
 
