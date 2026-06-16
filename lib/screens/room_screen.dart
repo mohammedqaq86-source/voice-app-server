@@ -6,12 +6,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as livekit;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import '../models/room.dart';
 import '../models/room_member_model.dart';
+import '../services/ad_service.dart';
 import '../services/room_service.dart';
 import '../utils/stream_utils.dart';
 import 'private_chat_screen.dart';
@@ -53,10 +55,15 @@ class _RoomScreenState extends State<RoomScreen>
       'https://voice-app-server-ssrz.onrender.com/token';
 
   final livekit.Room liveKitRoom = livekit.Room();
+  final AdService _adService = AdService();
   Timer? speakingMonitorTimer;
   Timer? _heartbeatTimer;
   Timer? _pauseLeaveTimer;
   Set<String> speakingUserIds = <String>{};
+
+  // ── Banner ad ────────────────────────────────────────────────────────────
+  BannerAd? _bannerAd;
+  bool _isBannerAdLoaded = false;
 
   bool isVoiceConnected = false;
   bool isConnectingVoice = false;
@@ -123,6 +130,25 @@ class _RoomScreenState extends State<RoomScreen>
   ReplyTarget? replyTarget;
 
 
+  void _loadBannerAd() {
+    if (kIsWeb) return;
+    _bannerAd = BannerAd(
+      adUnitId: AdService.bannerId,
+      size: AdSize.banner,
+      request: const AdRequest(),
+      listener: BannerAdListener(
+        onAdLoaded: (ad) {
+          if (!mounted) return;
+          setState(() => _isBannerAdLoaded = true);
+        },
+        onAdFailedToLoad: (ad, error) {
+          ad.dispose();
+          _bannerAd = null;
+        },
+      ),
+    )..load();
+  }
+
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
@@ -151,6 +177,7 @@ class _RoomScreenState extends State<RoomScreen>
 
       hasJoinedRoom = true;
       _startHeartbeat();
+      _adService.loadInterstitial(); // preload so it's ready when user exits
     } catch (e) {
       if (!mounted) return;
 
@@ -207,6 +234,8 @@ class _RoomScreenState extends State<RoomScreen>
         mute: false,
       ),
     );
+
+    _loadBannerAd();
   }
 
   @override
@@ -258,6 +287,8 @@ class _RoomScreenState extends State<RoomScreen>
     speakingMonitorTimer?.cancel();
     _heartbeatTimer?.cancel();
     _pauseLeaveTimer?.cancel();
+    _bannerAd?.dispose();
+    _adService.dispose();
     liveKitRoom.disconnect();
 
     if (!isLeavingRoom && currentUserId != 'guest_user') {
@@ -314,15 +345,29 @@ class _RoomScreenState extends State<RoomScreen>
 
     if (shouldExit != true || !mounted) return;
 
-    isLeavingRoom = true;
-    unawaited(disconnectVoiceRoom());
-    await roomService.leaveRoom(
-      roomId: widget.roomId,
-      userId: currentUserId,
-    );
+    // Capture mic state before any teardown.
+    final wasUsingMic = isMicOn;
 
-    if (!mounted) return;
-    Navigator.pop(context);
+    isLeavingRoom = true;
+
+    // Always stop voice first so the ad shows in silence.
+    await disconnectVoiceRoom();
+
+    Future<void> leaveAndPop() async {
+      await roomService.leaveRoom(
+        roomId: widget.roomId,
+        userId: currentUserId,
+      );
+      if (mounted) Navigator.pop(context);
+    }
+
+    // Skip the interstitial if the user was actively speaking —
+    // interrupting a voice session with an ad would be disruptive.
+    if (!wasUsingMic && _adService.isInterstitialReady) {
+      await _adService.showInterstitialAndThen(() => unawaited(leaveAndPop()));
+    } else {
+      await leaveAndPop();
+    }
   }
 
   void scrollChatToBottom() {
@@ -1509,6 +1554,26 @@ class _RoomScreenState extends State<RoomScreen>
     Navigator.pop(context);
   }
 
+  Widget _buildBannerAd() {
+    // On Android/iOS show the real AdMob banner once it loads.
+    if (!kIsWeb && _isBannerAdLoaded && _bannerAd != null) {
+      return Container(
+        width: double.infinity,
+        height: _bannerAd!.size.height.toDouble(),
+        color: Colors.black.withOpacity(0.22),
+        alignment: Alignment.center,
+        child: SizedBox(
+          width: _bannerAd!.size.width.toDouble(),
+          height: _bannerAd!.size.height.toDouble(),
+          child: AdWidget(ad: _bannerAd!),
+        ),
+      );
+    }
+
+    // On web (dev only) or while the ad is still loading — show nothing.
+    return const SizedBox.shrink();
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope<Object?>(
@@ -1836,25 +1901,7 @@ class _RoomScreenState extends State<RoomScreen>
                       ),
                     ),
                     const SizedBox(height: 10),
-                    Container(
-                      height: 72,
-                      width: double.infinity,
-                      color: Colors.black.withOpacity(0.22),
-                      alignment: Alignment.center,
-                      child: Container(
-                        height: 52,
-                        margin: const EdgeInsets.symmetric(horizontal: 18),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.92),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        alignment: Alignment.center,
-                        child: const Text(
-                          'Ad Space',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ),
+                    _buildBannerAd(),
                   ],
                 ),
               ),
