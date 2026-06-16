@@ -54,6 +54,8 @@ class _RoomScreenState extends State<RoomScreen>
 
   final livekit.Room liveKitRoom = livekit.Room();
   Timer? speakingMonitorTimer;
+  Timer? _heartbeatTimer;
+  Timer? _pauseLeaveTimer;
   Set<String> speakingUserIds = <String>{};
 
   bool isVoiceConnected = false;
@@ -121,6 +123,17 @@ class _RoomScreenState extends State<RoomScreen>
   ReplyTarget? replyTarget;
 
 
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!hasJoinedRoom || isLeavingRoom || currentUserId == 'guest_user') return;
+      unawaited(roomService.updateMemberHeartbeat(
+        roomId: widget.roomId,
+        userId: currentUserId,
+      ));
+    });
+  }
+
   Future<void> ensureCurrentUserIsMember() async {
     final userId = currentUserId.trim();
 
@@ -137,6 +150,7 @@ class _RoomScreenState extends State<RoomScreen>
       );
 
       hasJoinedRoom = true;
+      _startHeartbeat();
     } catch (e) {
       if (!mounted) return;
 
@@ -197,7 +211,29 @@ class _RoomScreenState extends State<RoomScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.detached) {
+    if (state == AppLifecycleState.resumed) {
+      // User came back — cancel any pending background-leave.
+      _pauseLeaveTimer?.cancel();
+      _pauseLeaveTimer = null;
+    } else if (state == AppLifecycleState.paused) {
+      // App went to background. Stop heartbeat and schedule a leave after 2 min
+      // so that if the user never returns, the room member count stays accurate.
+      _heartbeatTimer?.cancel();
+      if (!isLeavingRoom && currentUserId != 'guest_user' && hasJoinedRoom) {
+        _pauseLeaveTimer?.cancel();
+        _pauseLeaveTimer = Timer(const Duration(minutes: 2), () {
+          if (isLeavingRoom) return;
+          isLeavingRoom = true;
+          unawaited(disconnectVoiceRoom());
+          unawaited(roomService.leaveRoom(
+            roomId: widget.roomId,
+            userId: currentUserId,
+          ));
+        });
+      }
+    } else if (state == AppLifecycleState.detached) {
+      _pauseLeaveTimer?.cancel();
+      _heartbeatTimer?.cancel();
       if (!isLeavingRoom && currentUserId != 'guest_user' && hasJoinedRoom) {
         isLeavingRoom = true;
         unawaited(disconnectVoiceRoom());
@@ -220,6 +256,8 @@ class _RoomScreenState extends State<RoomScreen>
 
     roomSubscription?.cancel();
     speakingMonitorTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    _pauseLeaveTimer?.cancel();
     liveKitRoom.disconnect();
 
     if (!isLeavingRoom && currentUserId != 'guest_user') {
@@ -1367,7 +1405,7 @@ class _RoomScreenState extends State<RoomScreen>
     return RoomUser(
       userId: canonicalUserId,
       name: member.name.isEmpty ? 'User' : member.name,
-      image: member.image.isEmpty ? 'https://i.pravatar.cc/150' : member.image,
+      image: member.image.isEmpty ? 'https://i.pravatar.cc/150?u=$canonicalUserId' : member.image,
       role: isLeaderUser ? 'Owner' : 'Listener',
       countryFlag: countryFlagFromData(data),
       isSpeaker: speakingUserIds.contains(canonicalUserId),
@@ -1396,8 +1434,9 @@ class _RoomScreenState extends State<RoomScreen>
     _confirmedMembership = true;
     final member = roomUsers[currentIndex];
 
-    // Track mic permission changes and notify the user
-    final newPermission = member.hasMicPermission || isRoomOwner;
+    // Track mic permission changes and notify the user.
+    // everyoneCanUseMic acts as a room-wide grant — include it in the check.
+    final newPermission = member.hasMicPermission || isRoomOwner || everyoneCanUseMic;
     if (_micPermissionInitialized && newPermission != _lastKnownMicPermission) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -1432,7 +1471,10 @@ class _RoomScreenState extends State<RoomScreen>
     _lastKnownMicPermission = newPermission;
     _micPermissionInitialized = true;
 
-    final shouldForceMicOff = !member.hasMicPermission && !isRoomOwner && isMicOn;
+    // Force mic off only when the user truly has no permission.
+    // everyoneCanUseMic is a room-wide grant that overrides individual flags.
+    final shouldForceMicOff =
+        !member.hasMicPermission && !isRoomOwner && !everyoneCanUseMic && isMicOn;
 
     if (shouldForceMicOff) {
       isMicOn = false;

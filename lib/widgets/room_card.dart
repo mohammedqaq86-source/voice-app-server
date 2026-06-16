@@ -279,15 +279,16 @@ class _AvatarStack extends StatelessWidget {
               height: avatarSize,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.18),
                 border: Border.all(
                   color: Colors.white,
                   width: 2,
                 ),
               ),
-              child: CircleAvatar(
-                backgroundImage: NetworkImage(
-                  'https://i.pravatar.cc/150?img=${index + 11}',
-                ),
+              child: const Icon(
+                Icons.person,
+                size: 16,
+                color: Colors.white70,
               ),
             ),
           );

@@ -305,6 +305,76 @@ class RoomService {
 
   // ─── Members ──────────────────────────────────────────────────────────────
 
+  /// Writes a fresh lastSeen timestamp for an active member (heartbeat).
+  Future<void> updateMemberHeartbeat({
+    required String roomId,
+    required String userId,
+  }) async {
+    try {
+      await _firestore
+          .collection('rooms')
+          .doc(roomId)
+          .collection('members')
+          .doc(userId)
+          .set(
+            {'lastSeen': FieldValue.serverTimestamp()},
+            SetOptions(merge: true),
+          );
+    } catch (_) {}
+  }
+
+  /// Removes members whose lastSeen is older than [staleMinutes] minutes.
+  /// Pass [excludeUserId] to protect the user who is currently joining.
+  /// Stale members are deleted first; if the owner was among them, leadership
+  /// is then transferred to whoever is left (or the room is closed if empty).
+  Future<void> cleanupStaleMembers({
+    required String roomId,
+    String? excludeUserId,
+    int staleMinutes = 5,
+  }) async {
+    try {
+      final threshold = Timestamp.fromDate(
+        DateTime.now().subtract(Duration(minutes: staleMinutes)),
+      );
+      final roomRef = _firestore.collection('rooms').doc(roomId);
+      final membersSnap = await roomRef.collection('members').get();
+
+      final stale = membersSnap.docs.where((doc) {
+        if (excludeUserId != null && doc.id == excludeUserId) return false;
+        final lastSeen = doc.data()['lastSeen'];
+        if (lastSeen == null) return false;
+        return (lastSeen as Timestamp).compareTo(threshold) < 0;
+      }).toList();
+
+      if (stale.isEmpty) return;
+
+      // Record whether the current owner is stale before deleting.
+      final roomDoc = await roomRef.get();
+      final ownerId = (roomDoc.data()?['ownerId'] ?? '').toString();
+      final ownerIsStale = stale.any((d) => d.id == ownerId);
+
+      // Delete stale members first so _autoTransferLeadershipOnLeave only
+      // sees truly active members when it chooses the next leader.
+      final batch = _firestore.batch();
+      for (final doc in stale) {
+        batch.delete(doc.reference);
+      }
+      await batch.commit();
+
+      // If the owner was stale, hand leadership to whoever remains (or close).
+      if (ownerIsStale) {
+        await _autoTransferLeadershipOnLeave(
+          roomId: roomId,
+          leavingUserId: ownerId,
+        );
+      }
+
+      await updateRoomCounts(roomId: roomId, isOwner: false);
+    } catch (_) {
+      // Don't block the join operation if cleanup fails.
+    }
+  }
+
   Future<void> cleanupLegacyRoomMembers({required String roomId}) async {
     final roomRef = _firestore.collection('rooms').doc(roomId);
     final members = await roomRef.collection('members').get();
@@ -341,6 +411,9 @@ class RoomService {
     bool isLeader = false,
     bool hasMicPermission = false,
   }) async {
+    // Remove members who disappeared without leaving (app killed / connection lost).
+    await cleanupStaleMembers(roomId: roomId, excludeUserId: userId);
+
     final roomRef = _firestore.collection('rooms').doc(roomId);
     final roomDoc = await roomRef.get();
     if (!roomDoc.exists) return;
