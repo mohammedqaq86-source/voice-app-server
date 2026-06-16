@@ -305,36 +305,56 @@ class RoomService {
 
   // ─── Members ──────────────────────────────────────────────────────────────
 
-  /// Writes a fresh lastSeen timestamp for an active member (heartbeat).
+  /// Writes a fresh lastSeen + isOnline = true for both the room member doc
+  /// and the global user profile so all presence surfaces stay in sync.
   Future<void> updateMemberHeartbeat({
     required String roomId,
     required String userId,
   }) async {
     try {
-      await _firestore
-          .collection('rooms')
-          .doc(roomId)
-          .collection('members')
-          .doc(userId)
-          .set(
-            {'lastSeen': FieldValue.serverTimestamp()},
-            SetOptions(merge: true),
-          );
+      final batch = _firestore.batch();
+
+      batch.set(
+        _firestore
+            .collection('rooms')
+            .doc(roomId)
+            .collection('members')
+            .doc(userId),
+        {
+          'isOnline': true,
+          'lastSeen': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+
+      batch.set(
+        _firestore.collection('users').doc(userId),
+        {
+          'isOnline': true,
+          'currentRoomId': roomId,
+          'lastSeen': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+
+      await batch.commit();
     } catch (_) {}
   }
 
-  /// Removes members whose lastSeen is older than [staleMinutes] minutes.
+  /// Removes members whose lastSeen is older than [staleSeconds] seconds.
   /// Pass [excludeUserId] to protect the user who is currently joining.
   /// Stale members are deleted first; if the owner was among them, leadership
   /// is then transferred to whoever is left (or the room is closed if empty).
+  /// Global user presence (isOnline / currentRoomId) is cleared for each
+  /// removed member so the users collection stays consistent.
   Future<void> cleanupStaleMembers({
     required String roomId,
     String? excludeUserId,
-    int staleMinutes = 5,
+    int staleSeconds = 75,
   }) async {
     try {
       final threshold = Timestamp.fromDate(
-        DateTime.now().subtract(Duration(minutes: staleMinutes)),
+        DateTime.now().subtract(Duration(seconds: staleSeconds)),
       );
       final roomRef = _firestore.collection('rooms').doc(roomId);
       final membersSnap = await roomRef.collection('members').get();
@@ -353,11 +373,19 @@ class RoomService {
       final ownerId = (roomDoc.data()?['ownerId'] ?? '').toString();
       final ownerIsStale = stale.any((d) => d.id == ownerId);
 
-      // Delete stale members first so _autoTransferLeadershipOnLeave only
-      // sees truly active members when it chooses the next leader.
+      // Delete stale member docs and clear their global presence.
       final batch = _firestore.batch();
       for (final doc in stale) {
         batch.delete(doc.reference);
+        batch.set(
+          _firestore.collection('users').doc(doc.id),
+          {
+            'isOnline': false,
+            'currentRoomId': null,
+            'lastSeen': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
       }
       await batch.commit();
 
@@ -450,6 +478,17 @@ class RoomService {
     };
     batch.set(memberRef, memberData, SetOptions(merge: true));
 
+    // Update global user presence so other screens can see who is in a room.
+    batch.set(
+      _firestore.collection('users').doc(userId),
+      {
+        'isOnline': true,
+        'currentRoomId': roomId,
+        'lastSeen': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+
     if (inviteDoc.exists) {
       batch.delete(roomRef.collection('kickedUsers').doc(userId));
       batch.delete(roomRef.collection('invites').doc(userId));
@@ -508,6 +547,16 @@ class RoomService {
     });
 
     await memberRef.delete();
+
+    // Clear global user presence now that the user has left.
+    unawaited(_firestore.collection('users').doc(userId).set(
+      {
+        'isOnline': false,
+        'currentRoomId': null,
+        'lastSeen': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    ));
 
     // Auto-close room when last member leaves
     final remaining = await roomRef.collection('members').get();
@@ -629,22 +678,50 @@ class RoomService {
         .collection('members')
         .get();
 
+    // A member is counted only when they are marked online AND their heartbeat
+    // is fresh (lastSeen within 75 seconds — 3× the 25-second heartbeat interval).
+    final cutoff = Timestamp.fromDate(
+      DateTime.now().subtract(const Duration(seconds: 75)),
+    );
+
     final realMembers = membersSnapshot.docs.where((doc) {
       final data = doc.data();
+
+      // Exclude legacy fake users / bots.
       final userId = (data['userId'] ?? doc.id).toString().toLowerCase();
       final name = (data['name'] ?? '').toString().toLowerCase();
       final isBot = userId.startsWith('bot_') ||
           userId == 'user_mohammed' ||
           userId.contains('bot') ||
           name.contains('bot');
-      return !isBot;
+      if (isBot) return false;
+
+      // Must be marked online.
+      if (data['isOnline'] != true) return false;
+
+      // lastSeen must be recent (or null = server timestamp still pending).
+      final lastSeen = data['lastSeen'];
+      if (lastSeen == null) return true;
+      return (lastSeen as Timestamp).compareTo(cutoff) > 0;
     }).toList();
 
-    final speakersCount = realMembers.where((doc) {
-      return doc.data()['isMicOn'] == true;
-    }).length;
+    final roomRef = _firestore.collection('rooms').doc(roomId);
 
-    await _firestore.collection('rooms').doc(roomId).update({
+    // Auto-close the room if no real members remain.
+    if (realMembers.isEmpty) {
+      await roomRef.update({
+        'isOpen': false,
+        'usersCount': 0,
+        'speakersCount': 0,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      return;
+    }
+
+    final speakersCount =
+        realMembers.where((doc) => doc.data()['isMicOn'] == true).length;
+
+    await roomRef.update({
       'usersCount': realMembers.length,
       'speakersCount': speakersCount,
     });

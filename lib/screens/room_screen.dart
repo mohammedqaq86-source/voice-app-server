@@ -16,6 +16,7 @@ import '../models/room_member_model.dart';
 import '../services/ad_service.dart';
 import '../services/room_service.dart';
 import '../utils/stream_utils.dart';
+import '../utils/web_unload.dart';
 import 'private_chat_screen.dart';
 
 class ReplyTarget {
@@ -151,8 +152,12 @@ class _RoomScreenState extends State<RoomScreen>
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (!hasJoinedRoom || isLeavingRoom || currentUserId == 'guest_user') return;
+    // 25 s keeps lastSeen well within the 75-second stale window on both
+    // slow connections and after a brief background suspension.
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      if (!hasJoinedRoom || isLeavingRoom || currentUserId == 'guest_user') {
+        return;
+      }
       unawaited(roomService.updateMemberHeartbeat(
         roomId: widget.roomId,
         userId: currentUserId,
@@ -236,6 +241,17 @@ class _RoomScreenState extends State<RoomScreen>
     );
 
     _loadBannerAd();
+
+    listenForPageUnload(() {
+      if (!isLeavingRoom && hasJoinedRoom && currentUserId != 'guest_user') {
+        isLeavingRoom = true;
+        _heartbeatTimer?.cancel();
+        unawaited(roomService.leaveRoom(
+          roomId: widget.roomId,
+          userId: currentUserId,
+        ));
+      }
+    });
   }
 
   @override
@@ -1278,7 +1294,19 @@ class _RoomScreenState extends State<RoomScreen>
               }
 
               final docs = snapshot.data?.docs ?? [];
+              final panelCutoff = DateTime.now().subtract(
+                const Duration(seconds: 75),
+              );
               final roomUsers = docs
+                  .where((doc) {
+                    final data = doc.data();
+                    if (data['isOnline'] != true) return false;
+                    final lastSeen = data['lastSeen'];
+                    if (lastSeen == null) return true;
+                    return (lastSeen as Timestamp)
+                        .toDate()
+                        .isAfter(panelCutoff);
+                  })
                   .map(
                     (doc) => roomUserFromFirestore(
                       doc.data(),
@@ -1590,7 +1618,24 @@ class _RoomScreenState extends State<RoomScreen>
           builder: (context, membersSnapshot) {
             final docs = membersSnapshot.data?.docs ?? [];
 
+            // Presence cutoff: same threshold as the server-side cleanup (75 s).
+            final presenceCutoff = DateTime.now().subtract(
+              const Duration(seconds: 75),
+            );
+
             users = docs
+                .where((doc) {
+                  final data = doc.data();
+                  // Must be explicitly marked online.
+                  if (data['isOnline'] != true) return false;
+                  // lastSeen must be fresh — if null the server timestamp is
+                  // still pending (brand-new join), so include it.
+                  final lastSeen = data['lastSeen'];
+                  if (lastSeen == null) return true;
+                  return (lastSeen as Timestamp)
+                      .toDate()
+                      .isAfter(presenceCutoff);
+                })
                 .map(
                   (doc) => roomUserFromFirestore(
                     doc.data(),
