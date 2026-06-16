@@ -60,6 +60,7 @@ class _RoomScreenState extends State<RoomScreen>
   Timer? speakingMonitorTimer;
   Timer? _heartbeatTimer;
   Timer? _pauseLeaveTimer;
+  int _heartbeatTick = 0;
   Set<String> speakingUserIds = <String>{};
 
   // ── Banner ad ────────────────────────────────────────────────────────────
@@ -152,16 +153,22 @@ class _RoomScreenState extends State<RoomScreen>
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    // 25 s keeps lastSeen well within the 75-second stale window on both
-    // slow connections and after a brief background suspension.
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 25), (_) {
       if (!hasJoinedRoom || isLeavingRoom || currentUserId == 'guest_user') {
         return;
       }
+      _heartbeatTick++;
       unawaited(roomService.updateMemberHeartbeat(
         roomId: widget.roomId,
         userId: currentUserId,
       ));
+      // Every 3rd tick (~75 s) clean up any ghost members from this room.
+      if (_heartbeatTick % 3 == 0) {
+        unawaited(roomService.cleanupStaleMembers(
+          roomId: widget.roomId,
+          excludeUserId: currentUserId,
+        ));
+      }
     });
   }
 
@@ -257,9 +264,16 @@ class _RoomScreenState extends State<RoomScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      // User came back — cancel any pending background-leave.
       _pauseLeaveTimer?.cancel();
       _pauseLeaveTimer = null;
+      // Restart heartbeat so lastSeen stays fresh after returning from background.
+      if (hasJoinedRoom && !isLeavingRoom && currentUserId != 'guest_user') {
+        _startHeartbeat();
+        unawaited(roomService.updateMemberHeartbeat(
+          roomId: widget.roomId,
+          userId: currentUserId,
+        ));
+      }
     } else if (state == AppLifecycleState.paused) {
       // App went to background. Stop heartbeat and schedule a leave after 2 min
       // so that if the user never returns, the room member count stays accurate.

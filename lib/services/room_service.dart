@@ -361,8 +361,12 @@ class RoomService {
 
       final stale = membersSnap.docs.where((doc) {
         if (excludeUserId != null && doc.id == excludeUserId) return false;
-        final lastSeen = doc.data()['lastSeen'];
-        if (lastSeen == null) return false;
+        final data = doc.data();
+        // Remove explicitly offline members (leaveRoom set isOnline:false but
+        // the delete may have failed, or the member was set offline by cleanup).
+        if (data['isOnline'] == false) return true;
+        final lastSeen = data['lastSeen'];
+        if (lastSeen == null) return false; // fresh join, server timestamp pending
         return (lastSeen as Timestamp).compareTo(threshold) < 0;
       }).toList();
 
@@ -725,6 +729,51 @@ class RoomService {
       'usersCount': realMembers.length,
       'speakersCount': speakersCount,
     });
+  }
+
+  /// Lightweight check called from the rooms list: if a room has no truly
+  /// online members it is closed immediately and all stale docs are deleted.
+  /// Safe to call in the background — never throws.
+  Future<void> closeRoomIfEmpty(String roomId) async {
+    try {
+      final cutoff = Timestamp.fromDate(
+        DateTime.now().subtract(const Duration(seconds: 75)),
+      );
+      final roomRef = _firestore.collection('rooms').doc(roomId);
+      final membersSnap = await roomRef.collection('members').get();
+
+      final hasRealMember = membersSnap.docs.any((doc) {
+        final data = doc.data();
+        if (data['isOnline'] != true) return false;
+        final lastSeen = data['lastSeen'];
+        if (lastSeen == null) return true; // fresh join
+        return (lastSeen as Timestamp).compareTo(cutoff) > 0;
+      });
+
+      if (hasRealMember) return;
+
+      // No real member found — delete all stale docs and close the room.
+      final batch = _firestore.batch();
+      batch.update(roomRef, {
+        'isOpen': false,
+        'usersCount': 0,
+        'speakersCount': 0,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      for (final doc in membersSnap.docs) {
+        batch.delete(doc.reference);
+        batch.set(
+          _firestore.collection('users').doc(doc.id),
+          {
+            'isOnline': false,
+            'currentRoomId': null,
+            'lastSeen': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+      }
+      await batch.commit();
+    } catch (_) {}
   }
 
   Future<void> updateMicPermission({

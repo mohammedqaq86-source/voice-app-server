@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -497,6 +498,12 @@ class _HomeScreenState extends State<HomeScreen>
 
                         final snapshotData = snapshot.data as dynamic;
                         final docs = snapshotData?.docs ?? [];
+
+                        // Trigger background cleanup for every visible room so
+                        // ghost-only rooms are closed without waiting for a join.
+                        for (final doc in docs) {
+                          unawaited(roomService.closeRoomIfEmpty(doc.id));
+                        }
 
                         if (docs.isEmpty) {
                           return const Center(
