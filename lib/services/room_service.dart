@@ -1120,9 +1120,13 @@ class RoomService {
         'sessionToken': '',
       });
     } else {
+      // Never overwrite photoUrl for existing users — they manage it via the profile screen.
+      // Only sync the display name if not yet set.
+      final existingName = (doc.data()?['name'] as String? ?? '').trim();
       final updates = <String, dynamic>{};
-      if (displayName != null && displayName.isNotEmpty) updates['name'] = displayName;
-      if (photoUrl != null && photoUrl.isNotEmpty) updates['photoUrl'] = photoUrl;
+      if (existingName.isEmpty && displayName != null && displayName.isNotEmpty) {
+        updates['name'] = displayName;
+      }
       if (updates.isNotEmpty) await ref.set(updates, SetOptions(merge: true));
     }
   }
@@ -1262,15 +1266,17 @@ class RoomService {
     String uid, {
     bool isOwner = false,
   }) {
-    var query = _firestore
+    final col = _firestore
         .collection('users')
         .doc(uid)
-        .collection('profilePhotos')
-        .orderBy('createdAt', descending: true);
-    if (!isOwner) {
-      return query.where('visibility', isEqualTo: 'public').snapshots();
+        .collection('profilePhotos');
+
+    if (isOwner) {
+      return col.orderBy('createdAt', descending: true).snapshots();
     }
-    return query.snapshots();
+    // Non-owner: filter by public only without orderBy to avoid requiring a
+    // composite Firestore index (visibility + createdAt).
+    return col.where('visibility', isEqualTo: 'public').snapshots();
   }
 
   Stream<int> friendsCountStream(String uid) {

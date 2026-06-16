@@ -1,9 +1,9 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/room_service.dart';
 
@@ -32,12 +32,18 @@ class _ProfileScreenState extends State<ProfileScreen>
   final RoomService roomService = RoomService();
   late final AnimationController _bgController;
 
+  // Cache stream once — prevents re-subscription on every rebuild/animation frame
+  late final Stream<DocumentSnapshot<Map<String, dynamic>>> _userStream;
+
   final _bioCtrl = TextEditingController();
   final _bioFocus = FocusNode();
-  bool _editingBio = false;
-  bool _savingBio = false;
-  bool _uploadingAvatar = false;
 
+  // ValueNotifiers: local UI state that should NOT trigger StreamBuilder rebuilds
+  final _editingBio = ValueNotifier<bool>(false);
+  final _savingBio = ValueNotifier<bool>(false);
+  final _uploadingAvatar = ValueNotifier<bool>(false);
+
+  // Selection state still uses setState (affects PhotosSection + SelectionBar together)
   bool _selectMode = false;
   final Set<String> _selectedPhotoIds = {};
 
@@ -46,13 +52,17 @@ class _ProfileScreenState extends State<ProfileScreen>
   @override
   void initState() {
     super.initState();
+
+    // Stable stream reference — never recreated on rebuild
+    _userStream = roomService.userProfileStream(widget.targetUserId);
+
     _bgController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 14),
     )..repeat(reverse: true);
 
     _bioFocus.addListener(() {
-      if (!_bioFocus.hasFocus && _editingBio) {
+      if (!_bioFocus.hasFocus && _editingBio.value) {
         _saveBio();
       }
     });
@@ -67,6 +77,9 @@ class _ProfileScreenState extends State<ProfileScreen>
     _bgController.dispose();
     _bioCtrl.dispose();
     _bioFocus.dispose();
+    _editingBio.dispose();
+    _savingBio.dispose();
+    _uploadingAvatar.dispose();
     super.dispose();
   }
 
@@ -83,15 +96,13 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   Future<void> _saveBio() async {
     if (!mounted) return;
-    setState(() {
-      _editingBio = false;
-      _savingBio = true;
-    });
+    _editingBio.value = false;
+    _savingBio.value = true;
     await roomService.updateUserProfile(
       uid: widget.targetUserId,
       bio: _bioCtrl.text.trim(),
     );
-    if (mounted) setState(() => _savingBio = false);
+    if (mounted) _savingBio.value = false;
   }
 
   Future<void> _pickAndUploadAvatar() async {
@@ -103,7 +114,9 @@ class _ProfileScreenState extends State<ProfileScreen>
       imageQuality: 80,
     );
     if (file == null || !mounted) return;
-    setState(() => _uploadingAvatar = true);
+
+    // Only the avatar widget rebuilds — no setState, no StreamBuilder disruption
+    _uploadingAvatar.value = true;
     try {
       final Uint8List bytes = await file.readAsBytes();
       final url = await roomService.uploadProfileImage(
@@ -111,6 +124,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         imageBytes: bytes,
         fileName: 'avatar_${DateTime.now().millisecondsSinceEpoch}.jpg',
       );
+      // Single Firestore write after upload completes
       await roomService.updateUserProfile(
         uid: widget.targetUserId,
         photoUrl: url,
@@ -123,7 +137,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         );
       }
     } finally {
-      if (mounted) setState(() => _uploadingAvatar = false);
+      if (mounted) _uploadingAvatar.value = false;
     }
   }
 
@@ -229,10 +243,13 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
+  static final _usernameRegex = RegExp(r'^[a-zA-Z0-9_\.]+$');
+
   void _showEditDialog(Map<String, dynamic> profile) {
     final nameCtrl = TextEditingController(text: profile['name'] ?? '');
     final usernameCtrl =
         TextEditingController(text: profile['username'] ?? '');
+    final formKey = GlobalKey<FormState>();
 
     showDialog(
       context: context,
@@ -247,14 +264,37 @@ class _ProfileScreenState extends State<ProfileScreen>
             style:
                 TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _editField(nameCtrl, 'الاسم', Icons.person_rounded),
-              const SizedBox(height: 12),
-              _editField(usernameCtrl, 'المعرف (@username)',
-                  Icons.alternate_email_rounded),
-            ],
+          content: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _editField(nameCtrl, 'الاسم', Icons.person_rounded,
+                    validator: (v) =>
+                        (v?.trim().isEmpty ?? true) ? 'الاسم مطلوب' : null),
+                const SizedBox(height: 12),
+                _editField(
+                  usernameCtrl,
+                  'المعرف (@username)',
+                  Icons.alternate_email_rounded,
+                  textDirection: TextDirection.ltr,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(
+                        RegExp(r'[a-zA-Z0-9_\.]')),
+                  ],
+                  validator: (v) {
+                    final val = v?.trim() ?? '';
+                    if (val.isEmpty) return 'المعرف مطلوب';
+                    if (val.length < 3) return '3 أحرف على الأقل';
+                    if (val.length > 30) return '30 حرفاً كحد أقصى';
+                    if (!_usernameRegex.hasMatch(val)) {
+                      return 'أحرف إنجليزية وأرقام فقط';
+                    }
+                    return null;
+                  },
+                ),
+              ],
+            ),
           ),
           actions: [
             TextButton(
@@ -268,11 +308,12 @@ class _ProfileScreenState extends State<ProfileScreen>
                 foregroundColor: Colors.white,
               ),
               onPressed: () async {
+                if (!(formKey.currentState?.validate() ?? false)) return;
                 Navigator.pop(ctx);
                 await roomService.updateUserProfile(
                   uid: widget.targetUserId,
                   name: nameCtrl.text.trim(),
-                  username: usernameCtrl.text.trim(),
+                  username: usernameCtrl.text.trim().toLowerCase(),
                 );
                 if (nameCtrl.text.trim().isNotEmpty) {
                   await FirebaseAuth.instance.currentUser
@@ -297,10 +338,16 @@ class _ProfileScreenState extends State<ProfileScreen>
     String hint,
     IconData icon, {
     int maxLines = 1,
+    TextDirection? textDirection,
+    List<TextInputFormatter>? inputFormatters,
+    String? Function(String?)? validator,
   }) {
-    return TextField(
+    return TextFormField(
       controller: ctrl,
       maxLines: maxLines,
+      textDirection: textDirection,
+      inputFormatters: inputFormatters,
+      validator: validator,
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
         hintText: hint,
@@ -312,6 +359,21 @@ class _ProfileScreenState extends State<ProfileScreen>
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide.none,
         ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide:
+              const BorderSide(color: Color(0xFF7B3FE4), width: 1.5),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide:
+              BorderSide(color: Colors.redAccent.withOpacity(0.6), width: 1),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Colors.redAccent, width: 1.5),
+        ),
+        errorStyle: const TextStyle(color: Colors.redAccent, fontSize: 11),
       ),
     );
   }
@@ -435,13 +497,22 @@ class _ProfileScreenState extends State<ProfileScreen>
       textDirection: TextDirection.rtl,
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        body: AnimatedBuilder(
-          animation: _bgController,
-          builder: (context, _) => CustomPaint(
-            painter: _ProfileBgPainter(_bgController.value),
-            child: SafeArea(
+        body: Stack(
+          children: [
+            // Background animation isolated in its own layer — never touches content tree
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: _bgController,
+                builder: (context, _) => CustomPaint(
+                  painter: _ProfileBgPainter(_bgController.value),
+                ),
+              ),
+            ),
+
+            // Content layer — completely independent from animation rebuilds
+            SafeArea(
               child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                stream: roomService.userProfileStream(widget.targetUserId),
+                stream: _userStream,
                 builder: (context, snapshot) {
                   final profile = snapshot.data?.data() ?? {};
                   final name =
@@ -450,7 +521,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                   final bio = (profile['bio'] ?? '').toString();
                   final photoUrl = (profile['photoUrl'] ?? '').toString();
 
-                  if (!_editingBio && _bioCtrl.text != bio) {
+                  // Sync bio text only when not editing
+                  if (!_editingBio.value && _bioCtrl.text != bio) {
                     _bioCtrl.text = bio;
                   }
 
@@ -515,64 +587,69 @@ class _ProfileScreenState extends State<ProfileScreen>
                           padding: const EdgeInsets.all(20),
                           child: Column(
                             children: [
-                              // Avatar + camera button
-                              Stack(
-                                alignment: Alignment.bottomRight,
-                                children: [
-                                  Container(
-                                    width: 110,
-                                    height: 110,
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: const Color(0xFF7B3FE4),
-                                        width: 3,
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: const Color(0xFF7B3FE4)
-                                              .withOpacity(0.4),
-                                          blurRadius: 20,
-                                          spreadRadius: 2,
+                              // Avatar — only this widget rebuilds on upload state change
+                              ValueListenableBuilder<bool>(
+                                valueListenable: _uploadingAvatar,
+                                builder: (context, uploading, _) => Stack(
+                                  alignment: Alignment.bottomRight,
+                                  children: [
+                                    Container(
+                                      width: 110,
+                                      height: 110,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        border: Border.all(
+                                          color: const Color(0xFF7B3FE4),
+                                          width: 3,
                                         ),
-                                      ],
-                                    ),
-                                    child: _uploadingAvatar
-                                        ? const Center(
-                                            child: CircularProgressIndicator(
-                                                color: Colors.white,
-                                                strokeWidth: 2))
-                                        : CircleAvatar(
-                                            radius: 52,
-                                            backgroundImage:
-                                                photoUrl.isNotEmpty
-                                                    ? NetworkImage(photoUrl)
-                                                    : null,
-                                            backgroundColor:
-                                                const Color(0xFF2D1F5E),
-                                            child: photoUrl.isEmpty
-                                                ? const Icon(Icons.person,
-                                                    size: 54,
-                                                    color: Colors.white54)
-                                                : null,
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: const Color(0xFF7B3FE4)
+                                                .withOpacity(0.4),
+                                            blurRadius: 20,
+                                            spreadRadius: 2,
                                           ),
-                                  ),
-                                  if (widget.isOwnProfile)
-                                    GestureDetector(
-                                      onTap: _pickAndUploadAvatar,
-                                      child: Container(
-                                        padding: const EdgeInsets.all(7),
-                                        decoration: const BoxDecoration(
-                                          color: Color(0xFF7B3FE4),
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(
-                                            Icons.camera_alt_rounded,
-                                            color: Colors.white,
-                                            size: 16),
+                                        ],
                                       ),
+                                      child: uploading
+                                          ? const Center(
+                                              child: CircularProgressIndicator(
+                                                  color: Colors.white,
+                                                  strokeWidth: 2))
+                                          : CircleAvatar(
+                                              radius: 52,
+                                              backgroundImage:
+                                                  photoUrl.isNotEmpty
+                                                      ? NetworkImage(photoUrl)
+                                                      : null,
+                                              backgroundColor:
+                                                  const Color(0xFF2D1F5E),
+                                              child: photoUrl.isEmpty
+                                                  ? const Icon(Icons.person,
+                                                      size: 54,
+                                                      color: Colors.white54)
+                                                  : null,
+                                            ),
                                     ),
-                                ],
+                                    if (widget.isOwnProfile)
+                                      GestureDetector(
+                                        onTap: uploading
+                                            ? null
+                                            : _pickAndUploadAvatar,
+                                        child: Container(
+                                          padding: const EdgeInsets.all(7),
+                                          decoration: const BoxDecoration(
+                                            color: Color(0xFF7B3FE4),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: const Icon(
+                                              Icons.camera_alt_rounded,
+                                              color: Colors.white,
+                                              size: 16),
+                                        ),
+                                      ),
+                                  ],
+                                ),
                               ),
 
                               const SizedBox(height: 16),
@@ -600,30 +677,37 @@ class _ProfileScreenState extends State<ProfileScreen>
 
                               const SizedBox(height: 14),
 
-                              // Bio - inline editable
-                              _BioSection(
-                                bio: bio,
-                                isOwn: widget.isOwnProfile,
-                                editing: _editingBio,
-                                saving: _savingBio,
-                                controller: _bioCtrl,
-                                focusNode: _bioFocus,
-                                onTap: () {
-                                  if (widget.isOwnProfile && !_editingBio) {
-                                    _bioCtrl.text = bio;
-                                    setState(() => _editingBio = true);
-                                    Future.delayed(
-                                      const Duration(milliseconds: 50),
-                                      () => _bioFocus.requestFocus(),
-                                    );
-                                  }
-                                },
-                                onSave: _saveBio,
+                              // Bio — only this widget rebuilds on editing/saving state change
+                              ValueListenableBuilder<bool>(
+                                valueListenable: _editingBio,
+                                builder: (context, editing, _) =>
+                                    ValueListenableBuilder<bool>(
+                                  valueListenable: _savingBio,
+                                  builder: (context, saving, _) => _BioSection(
+                                    bio: bio,
+                                    isOwn: widget.isOwnProfile,
+                                    editing: editing,
+                                    saving: saving,
+                                    controller: _bioCtrl,
+                                    focusNode: _bioFocus,
+                                    onTap: () {
+                                      if (widget.isOwnProfile && !editing) {
+                                        _bioCtrl.text = bio;
+                                        _editingBio.value = true;
+                                        Future.delayed(
+                                          const Duration(milliseconds: 50),
+                                          () => _bioFocus.requestFocus(),
+                                        );
+                                      }
+                                    },
+                                    onSave: _saveBio,
+                                  ),
+                                ),
                               ),
 
                               const SizedBox(height: 18),
 
-                              // Stats row (friends + rooms only)
+                              // Stats row
                               Row(
                                 children: [
                                   Expanded(
@@ -716,7 +800,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                 },
               ),
             ),
-          ),
+          ],
         ),
       ),
     );

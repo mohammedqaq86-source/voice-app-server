@@ -1,11 +1,13 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
+import 'screens/onboarding_screen.dart';
 import 'services/room_service.dart';
 
 void main() async {
@@ -45,9 +47,12 @@ class AuthGate extends StatefulWidget {
 class _AuthGateState extends State<AuthGate> {
   final RoomService _roomService = RoomService();
 
-  // In-memory session token for the current device session
   String? _mySessionToken;
   StreamSubscription<String?>? _sessionSub;
+
+  // Track which user's session is active to prevent duplicate _startSession calls
+  String? _lastUserId;
+  Stream<DocumentSnapshot<Map<String, dynamic>>>? _profileStream;
 
   @override
   void dispose() {
@@ -56,7 +61,6 @@ class _AuthGateState extends State<AuthGate> {
   }
 
   Future<void> _startSession(User user) async {
-    // Ensure user profile exists in Firestore
     await _roomService.ensureUserProfile(
       uid: user.uid,
       email: user.email ?? '',
@@ -64,18 +68,15 @@ class _AuthGateState extends State<AuthGate> {
       photoUrl: user.photoURL,
     );
 
-    // Generate and save a new session token; store it in memory
     _mySessionToken = await _roomService.updateSessionToken(user.uid);
 
-    // Listen for token changes — if another device logs in, kick this one out
     _sessionSub?.cancel();
-    _sessionSub = _roomService
-        .sessionTokenStream(user.uid)
-        .listen((remoteToken) async {
+    _sessionSub = _roomService.sessionTokenStream(user.uid).listen((remoteToken) async {
       if (_mySessionToken == null) return;
       if (remoteToken != null &&
           remoteToken.isNotEmpty &&
           remoteToken != _mySessionToken) {
+        // Another device logged in — kick this session out
         _mySessionToken = null;
         _sessionSub?.cancel();
         await FirebaseAuth.instance.signOut();
@@ -96,6 +97,8 @@ class _AuthGateState extends State<AuthGate> {
     _mySessionToken = null;
     _sessionSub?.cancel();
     _sessionSub = null;
+    _lastUserId = null;
+    _profileStream = null;
   }
 
   @override
@@ -104,24 +107,57 @@ class _AuthGateState extends State<AuthGate> {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
+          return const _LoadingScreen();
         }
 
         final user = snapshot.data;
 
         if (user != null) {
-          // Start session when user logs in (only if not already started)
-          if (_mySessionToken == null) {
-            _startSession(user);
+          // New user or re-login — set up session and profile stream once
+          if (_lastUserId != user.uid) {
+            _lastUserId = user.uid;
+            _mySessionToken = null;
+            _profileStream = _roomService.userProfileStream(user.uid);
+            _startSession(user); // fire-and-forget; session runs in background
           }
-          return const HomeScreen();
+
+          return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: _profileStream,
+            builder: (context, profileSnap) {
+              if (profileSnap.connectionState == ConnectionState.waiting) {
+                return const _LoadingScreen();
+              }
+
+              final data = profileSnap.data?.data() ?? {};
+              final username = (data['username'] ?? '').toString().trim();
+
+              // Enforce onboarding until username is set
+              if (username.isEmpty) {
+                return const OnboardingScreen();
+              }
+
+              return const HomeScreen();
+            },
+          );
         }
 
         _stopSession();
         return const LoginScreen();
       },
+    );
+  }
+}
+
+class _LoadingScreen extends StatelessWidget {
+  const _LoadingScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Color(0xFF120B2E),
+      body: Center(
+        child: CircularProgressIndicator(color: Color(0xFF7B3FE4)),
+      ),
     );
   }
 }
