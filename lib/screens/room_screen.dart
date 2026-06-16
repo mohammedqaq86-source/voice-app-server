@@ -80,6 +80,8 @@ class _RoomScreenState extends State<RoomScreen>
   // Flipped to true (via setState) just before Navigator.pop so that
   // PopScope allows the programmatic pop to proceed.
   bool _canPopNow = false;
+  // Prevents concurrent confirmExitRoom calls (rapid X taps / PopScope re-fire).
+  bool _isConfirmingExit = false;
   bool _showUsersPanel = false;
 
   bool _lastKnownMicPermission = false;
@@ -356,6 +358,11 @@ class _RoomScreenState extends State<RoomScreen>
   }
 
   Future<void> confirmExitRoom() async {
+    // Guard: prevent showing multiple dialogs when the user taps X rapidly or
+    // when PopScope re-fires onPopInvokedWithResult during teardown.
+    if (_isConfirmingExit || isLeavingRoom) return;
+    _isConfirmingExit = true;
+
     final shouldExit = await showDialog<bool>(
       context: context,
       builder: (context) {
@@ -376,7 +383,10 @@ class _RoomScreenState extends State<RoomScreen>
       },
     );
 
-    if (shouldExit != true || !mounted) return;
+    if (shouldExit != true || !mounted) {
+      _isConfirmingExit = false; // Allow the user to try again later
+      return;
+    }
 
     // Capture mic state before any teardown.
     final wasUsingMic = isMicOn;
@@ -2065,6 +2075,13 @@ class _ChatMessagesListState extends State<ChatMessagesList>
   }
 
   bool isMessageFromCurrentSession(Map<String, dynamic> data) {
+    // System messages (join / leave / permission changes) must always be shown
+    // to every member regardless of when they opened the room.  They use a
+    // Firestore serverTimestamp which can be a few seconds behind the client
+    // clock, so applying sessionStartedAt to them would incorrectly hide them
+    // for non-leader members who joined right around the same time.
+    if ((data['type'] ?? 'message') == 'system') return true;
+
     final createdAt = data['createdAt'];
 
     if (createdAt == null) {

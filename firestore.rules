@@ -34,13 +34,8 @@ service cloud.firestore {
     // Allows members to revoke their own mic (set to false) but NOT elevate (set to true).
     function touchesSensitiveFields() {
       let affected = request.resource.data.diff(resource.data).affectedKeys();
-      // isLeader: never changeable by the member themselves
-      if (affected.hasAny(['isLeader'])) { return true; }
-      // hasMicPermission: sensitive only when being ELEVATED to true
-      if (affected.hasAny(['hasMicPermission']) && request.resource.data.hasMicPermission == true) {
-        return true;
-      }
-      return false;
+      return affected.hasAny(['isLeader']) ||
+        (affected.hasAny(['hasMicPermission']) && request.resource.data.hasMicPermission == true);
     }
 
     // ─── Users ───────────────────────────────────────────────────────────────
@@ -94,11 +89,12 @@ service cloud.firestore {
     match /rooms/{roomId} {
       allow read:   if isSignedIn();
       allow create: if isSignedIn();
-      // Room owner or leader can update anything; others can only touch usersCount/speakersCount
+      // Room owner or leader can update anything; others can only touch
+      // housekeeping fields — used by updateRoomCounts, leaveRoom, closeRoomIfEmpty.
       allow update: if isSignedIn() && (
         isRoomOwner(roomId) || isRoomLeader(roomId) ||
         request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['usersCount', 'speakersCount'])
+          .hasOnly(['usersCount', 'speakersCount', 'isOpen', 'updatedAt'])
       );
       allow delete: if isRoomOwner(roomId);
 
@@ -114,11 +110,13 @@ service cloud.firestore {
         allow delete: if isOwner(memberId) || isRoomOwner(roomId) || isRoomLeader(roomId);
       }
 
-      // Kicked users: room owner or leader can manage this list
+      // Kicked users: room owner or leader can manage this list.
+      // An invited user can also delete their own kicked entry (re-invite flow).
       match /kickedUsers/{userId} {
         allow read:   if isSignedIn();
         allow write:  if isRoomOwner(roomId) || isRoomLeader(roomId);
-        allow delete: if isRoomOwner(roomId) || isRoomLeader(roomId);
+        allow delete: if isRoomOwner(roomId) || isRoomLeader(roomId) ||
+          (isOwner(userId) && exists(/databases/$(database)/documents/rooms/$(roomId)/invites/$(userId)));
       }
 
       // Room-level invites: owner or leader sends/revokes; invited user can read/delete their own
