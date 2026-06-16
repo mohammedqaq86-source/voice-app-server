@@ -1,10 +1,12 @@
 import 'dart:math' as math;
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import '../models/room.dart';
 import '../services/notification_service.dart';
 import '../services/room_service.dart';
+import '../utils/stream_utils.dart';
 import '../widgets/room_card.dart';
 import '../widgets/search_box.dart';
 import 'friends_screen.dart';
@@ -27,6 +29,7 @@ class _HomeScreenState extends State<HomeScreen>
   final RoomService roomService = RoomService();
   final NotificationService notificationService = NotificationService();
   late final AnimationController backgroundController;
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _publicRoomsStream;
 
   User? get firebaseUser => FirebaseAuth.instance.currentUser;
 
@@ -66,6 +69,8 @@ class _HomeScreenState extends State<HomeScreen>
       vsync: this,
       duration: const Duration(seconds: 14),
     )..repeat(reverse: true);
+
+    _publicRoomsStream = safeFirestoreStream(roomService.publicOpenRoomsStream());
   }
 
   @override
@@ -246,6 +251,8 @@ class _HomeScreenState extends State<HomeScreen>
     required String roomId,
     required Room room,
   }) {
+    final membersStream = safeFirestoreStream(roomService.membersStream(roomId));
+
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF17112F),
@@ -291,7 +298,7 @@ class _HomeScreenState extends State<HomeScreen>
                   const SizedBox(height: 14),
                   Expanded(
                     child: StreamBuilder(
-                      stream: roomService.membersStream(roomId),
+                      stream: membersStream,
                       builder: (context, snapshot) {
                         if (snapshot.connectionState ==
                             ConnectionState.waiting) {
@@ -467,7 +474,7 @@ class _HomeScreenState extends State<HomeScreen>
                   ),
                   Expanded(
                     child: StreamBuilder(
-                      stream: roomService.publicOpenRoomsStream(),
+                      stream: _publicRoomsStream,
                       builder: (context, snapshot) {
                         if (snapshot.connectionState ==
                             ConnectionState.waiting) {
@@ -568,7 +575,7 @@ class _HomeScreenState extends State<HomeScreen>
   }
 }
 
-class InvitedRoomsSection extends StatelessWidget {
+class InvitedRoomsSection extends StatefulWidget {
   const InvitedRoomsSection({
     super.key,
     required this.roomService,
@@ -586,9 +593,22 @@ class InvitedRoomsSection extends StatelessWidget {
   }) onPreviewRoom;
 
   @override
+  State<InvitedRoomsSection> createState() => _InvitedRoomsSectionState();
+}
+
+class _InvitedRoomsSectionState extends State<InvitedRoomsSection> {
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _invitesStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _invitesStream = safeFirestoreStream(widget.roomService.myInvitesStream(userId: widget.currentUserId));
+  }
+
+  @override
   Widget build(BuildContext context) {
     return StreamBuilder(
-      stream: roomService.myInvitesStream(userId: currentUserId),
+      stream: _invitesStream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Padding(
@@ -653,7 +673,7 @@ class InvitedRoomsSection extends StatelessWidget {
                 final roomId = invite['roomId']?.toString() ?? inviteDoc.id;
 
                 return FutureBuilder(
-                  future: roomService.roomDocFuture(roomId: roomId),
+                  future: widget.roomService.roomDocFuture(roomId: roomId),
                   builder: (context, roomSnapshot) {
                     if (roomSnapshot.connectionState ==
                         ConnectionState.waiting) {
@@ -686,7 +706,7 @@ class InvitedRoomsSection extends StatelessWidget {
                       return const SizedBox.shrink();
                     }
 
-                    final room = roomFromFirestore(roomData, id: roomId);
+                    final room = widget.roomFromFirestore(roomData, id: roomId);
 
                     return Dismissible(
                       key: ValueKey('invite_$roomId'),
@@ -707,8 +727,8 @@ class InvitedRoomsSection extends StatelessWidget {
                         ),
                       ),
                       confirmDismiss: (_) async {
-                        await roomService.deleteInviteFromUser(
-                          userId: currentUserId,
+                        await widget.roomService.deleteInviteFromUser(
+                          userId: widget.currentUserId,
                           roomId: roomId,
                         );
 
@@ -724,7 +744,7 @@ class InvitedRoomsSection extends StatelessWidget {
                       },
                       child: GestureDetector(
                         onLongPress: () {
-                          onPreviewRoom(
+                          widget.onPreviewRoom(
                             roomId: roomId,
                             room: room,
                           );
@@ -1102,7 +1122,7 @@ class HomeWaveBackgroundPainter extends CustomPainter {
   }
 }
 
-class HomeHeader extends StatelessWidget {
+class HomeHeader extends StatefulWidget {
   const HomeHeader({
     super.key,
     required this.onOpenMenu,
@@ -1125,14 +1145,29 @@ class HomeHeader extends StatelessWidget {
   final VoidCallback onOpenProfile;
 
   @override
+  State<HomeHeader> createState() => _HomeHeaderState();
+}
+
+class _HomeHeaderState extends State<HomeHeader> {
+  late final Stream<int> _unreadNotifStream;
+  late final Stream<int> _unreadPmStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _unreadNotifStream = safeFirestoreStream(widget.notificationService.unreadCountStream(widget.currentUserId));
+    _unreadPmStream = safeFirestoreStream(widget.roomService.unreadPrivateMessagesCount(userId: widget.currentUserId));
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 14, 18, 8),
       child: Row(
         children: [
           GestureDetector(
-            onTap: onOpenMenu,
-            onLongPress: onOpenProfile,
+            onTap: widget.onOpenMenu,
+            onLongPress: widget.onOpenProfile,
             child: Container(
               width: 42,
               height: 42,
@@ -1141,11 +1176,11 @@ class HomeHeader extends StatelessWidget {
                 border: Border.all(color: Colors.white24, width: 2),
               ),
               child: CircleAvatar(
-                backgroundImage: currentUserImage.isNotEmpty
-                    ? NetworkImage(currentUserImage)
+                backgroundImage: widget.currentUserImage.isNotEmpty
+                    ? NetworkImage(widget.currentUserImage)
                     : null,
                 backgroundColor: const Color(0xFF2D1F5E),
-                child: currentUserImage.isEmpty
+                child: widget.currentUserImage.isEmpty
                     ? const Icon(Icons.person, color: Colors.white54, size: 22)
                     : null,
               ),
@@ -1153,7 +1188,7 @@ class HomeHeader extends StatelessWidget {
           ),
           const SizedBox(width: 6),
           IconButton(
-            onPressed: onOpenMenu,
+            onPressed: widget.onOpenMenu,
             icon: const Icon(
               Icons.menu_rounded,
               size: 28,
@@ -1171,14 +1206,14 @@ class HomeHeader extends StatelessWidget {
           ),
           const Spacer(),
           StreamBuilder<int>(
-            stream: notificationService.unreadCountStream(currentUserId),
+            stream: _unreadNotifStream,
             builder: (context, snapshot) {
               final count = snapshot.data ?? 0;
               return Stack(
                 clipBehavior: Clip.none,
                 children: [
                   IconButton(
-                    onPressed: onOpenNotifications,
+                    onPressed: widget.onOpenNotifications,
                     icon: const Icon(
                       Icons.notifications_rounded,
                       size: 30,
@@ -1211,14 +1246,14 @@ class HomeHeader extends StatelessWidget {
           ),
           // Friends icon with private message badge
           StreamBuilder<int>(
-            stream: roomService.unreadPrivateMessagesCount(userId: currentUserId),
+            stream: _unreadPmStream,
             builder: (context, snapshot) {
               final pmCount = snapshot.data ?? 0;
               return Stack(
                 clipBehavior: Clip.none,
                 children: [
                   IconButton(
-                    onPressed: onOpenFriends,
+                    onPressed: widget.onOpenFriends,
                     icon: const Icon(
                       Icons.people_alt_rounded,
                       size: 32,

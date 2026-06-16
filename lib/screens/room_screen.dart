@@ -13,6 +13,7 @@ import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import '../models/room.dart';
 import '../models/room_member_model.dart';
 import '../services/room_service.dart';
+import '../utils/stream_utils.dart';
 import 'private_chat_screen.dart';
 
 class ReplyTarget {
@@ -153,7 +154,7 @@ class _RoomScreenState extends State<RoomScreen>
     currentOwnerId = widget.room.ownerId;
     currentOwnerName = widget.room.ownerName;
     currentOwnerImage = widget.room.ownerImage;
-    _membersPanelStream = roomService.membersStream(widget.roomId);
+    _membersPanelStream = safeFirestoreStream(roomService.membersStream(widget.roomId));
 
     roomSubscription = roomService.roomStream(widget.roomId).listen((snapshot) {
       final data = snapshot.data();
@@ -605,6 +606,8 @@ class _RoomScreenState extends State<RoomScreen>
   }
 
   void _showInviteFriendsSheet() {
+    final friendsStream = safeFirestoreStream(roomService.friendsStream(userId: currentUserId));
+
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF17112F),
@@ -649,7 +652,7 @@ class _RoomScreenState extends State<RoomScreen>
                   const SizedBox(height: 12),
                   Expanded(
                     child: StreamBuilder(
-                      stream: roomService.friendsStream(userId: currentUserId),
+                      stream: friendsStream,
                       builder: (context, snapshot) {
                         final docs = snapshot.data?.docs ?? [];
                         if (docs.isEmpty) {
@@ -1476,7 +1479,7 @@ class _RoomScreenState extends State<RoomScreen>
       child: Scaffold(
         backgroundColor: Colors.transparent,
         body: StreamBuilder(
-          stream: roomService.membersStream(widget.roomId),
+          stream: _membersPanelStream,
           builder: (context, membersSnapshot) {
             final docs = membersSnapshot.data?.docs ?? [];
 
@@ -1872,7 +1875,7 @@ class _ChatMessagesListState extends State<ChatMessagesList>
     super.initState();
 
     sessionStartedAt = DateTime.now();
-    messagesStream = widget.roomService.messagesStream(widget.roomId);
+    messagesStream = safeFirestoreStream(widget.roomService.messagesStream(widget.roomId));
 
     widget.chatScrollController.addListener(() {
       if (!mounted) return;
