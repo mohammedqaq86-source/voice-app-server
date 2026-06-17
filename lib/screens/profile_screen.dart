@@ -700,6 +700,58 @@ class _ProfileScreenState extends State<ProfileScreen>
 
                               const SizedBox(height: 14),
 
+                              // ── Photos section ──────────────────────────
+                              StreamBuilder<
+                                  QuerySnapshot<Map<String, dynamic>>>(
+                                stream: roomService.profilePhotosStream(
+                                  widget.targetUserId,
+                                  isOwner: widget.isOwnProfile,
+                                  isFriend: _isFriend,
+                                ),
+                                builder: (context, photoSnap) {
+                                  final photoDocs =
+                                      photoSnap.data?.docs ?? [];
+                                  if (!widget.isOwnProfile &&
+                                      photoDocs.isEmpty) {
+                                    return const SizedBox.shrink();
+                                  }
+                                  return Column(
+                                    children: [
+                                      _SectionCard(
+                                        icon: Icons.photo_library_rounded,
+                                        title: 'الصور (${photoDocs.length})',
+                                        showMenu: true,
+                                        child: _PhotosGrid(
+                                          docs: photoDocs,
+                                          isOwn: widget.isOwnProfile,
+                                          selectMode: _selectMode,
+                                          selectedIds: _selectedPhotoIds,
+                                          onAddPhoto: _pickAndAddPhoto,
+                                          onEyeTap: _changePhotoVisibility,
+                                          onLongPress: (id) => setState(() {
+                                            _selectMode = true;
+                                            _selectedPhotoIds.add(id);
+                                          }),
+                                          onTapInSelect: (id) =>
+                                              setState(() {
+                                            if (_selectedPhotoIds
+                                                .contains(id)) {
+                                              _selectedPhotoIds.remove(id);
+                                              if (_selectedPhotoIds.isEmpty) {
+                                                _selectMode = false;
+                                              }
+                                            } else {
+                                              _selectedPhotoIds.add(id);
+                                            }
+                                          }),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 12),
+                                    ],
+                                  );
+                                },
+                              ),
+
                               // ── Friends section ─────────────────────────
                               _FriendsSection(
                                 targetUserId: widget.targetUserId,
@@ -770,58 +822,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                                 ),
                                 const SizedBox(height: 12),
                               ],
-
-                              // ── Photos section ──────────────────────────
-                              StreamBuilder<
-                                  QuerySnapshot<Map<String, dynamic>>>(
-                                stream: roomService.profilePhotosStream(
-                                  widget.targetUserId,
-                                  isOwner: widget.isOwnProfile,
-                                  isFriend: _isFriend,
-                                ),
-                                builder: (context, photoSnap) {
-                                  final photoDocs =
-                                      photoSnap.data?.docs ?? [];
-                                  if (!widget.isOwnProfile &&
-                                      photoDocs.isEmpty) {
-                                    return const SizedBox.shrink();
-                                  }
-                                  return Column(
-                                    children: [
-                                      _SectionCard(
-                                        icon: Icons.photo_library_rounded,
-                                        title: 'الصور (${photoDocs.length})',
-                                        showMenu: true,
-                                        child: _PhotosGrid(
-                                          docs: photoDocs,
-                                          isOwn: widget.isOwnProfile,
-                                          selectMode: _selectMode,
-                                          selectedIds: _selectedPhotoIds,
-                                          onAddPhoto: _pickAndAddPhoto,
-                                          onEyeTap: _changePhotoVisibility,
-                                          onLongPress: (id) => setState(() {
-                                            _selectMode = true;
-                                            _selectedPhotoIds.add(id);
-                                          }),
-                                          onTapInSelect: (id) =>
-                                              setState(() {
-                                            if (_selectedPhotoIds
-                                                .contains(id)) {
-                                              _selectedPhotoIds.remove(id);
-                                              if (_selectedPhotoIds.isEmpty) {
-                                                _selectMode = false;
-                                              }
-                                            } else {
-                                              _selectedPhotoIds.add(id);
-                                            }
-                                          }),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 12),
-                                    ],
-                                  );
-                                },
-                              ),
 
                               // ── Stats section ───────────────────────────
                               _SectionCard(
@@ -1353,10 +1353,6 @@ class _RoomsSectionState extends State<_RoomsSection> {
             .where((d) => d.data()['isRealRoom'] == true)
             .toList();
 
-        if (docs.isEmpty &&
-            snapshot.connectionState != ConnectionState.waiting) {
-          return const SizedBox.shrink();
-        }
         return _SectionCard(
           icon: Icons.mic_rounded,
           title: 'الغرف (${docs.length})',
@@ -1369,7 +1365,17 @@ class _RoomsSectionState extends State<_RoomsSection> {
                         color: Colors.white38, strokeWidth: 2),
                   ),
                 )
-              : Column(
+              : docs.isEmpty
+                  ? const SizedBox(
+                      height: 60,
+                      child: Center(
+                        child: Text(
+                          'لا توجد غرف بعد',
+                          style: TextStyle(color: Colors.white38, fontSize: 13),
+                        ),
+                      ),
+                    )
+                  : Column(
                   children: docs.map((doc) {
                     final data = doc.data();
                     final roomId = doc.id;
