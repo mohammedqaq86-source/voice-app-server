@@ -700,6 +700,56 @@ class _ProfileScreenState extends State<ProfileScreen>
 
                               const SizedBox(height: 14),
 
+                              // ── Bio section ─────────────────────────────
+                              _SectionCard(
+                                icon: Icons.person_outline_rounded,
+                                title: 'السيرة الذاتية',
+                                visibility:
+                                    widget.isOwnProfile ? bioVis : null,
+                                onVisibilityTap: widget.isOwnProfile
+                                    ? () async {
+                                        final v = await _showPrivacySheet(
+                                            context);
+                                        if (v != null && mounted) {
+                                          await roomService.updateUserProfile(
+                                            uid: widget.targetUserId,
+                                            bioVisibility: v,
+                                          );
+                                        }
+                                      }
+                                    : null,
+                                child: ValueListenableBuilder<bool>(
+                                  valueListenable: _editingBio,
+                                  builder: (_, editing, __) =>
+                                      ValueListenableBuilder<bool>(
+                                    valueListenable: _savingBio,
+                                    builder: (_, saving, __) => _BioContent(
+                                      bio: bio,
+                                      isOwn: widget.isOwnProfile,
+                                      canView: widget.isOwnProfile ||
+                                          _canViewStat(bioVis),
+                                      editing: editing,
+                                      saving: saving,
+                                      controller: _bioCtrl,
+                                      focusNode: _bioFocus,
+                                      onTap: () {
+                                        if (widget.isOwnProfile && !editing) {
+                                          _bioCtrl.text = bio;
+                                          _editingBio.value = true;
+                                          Future.delayed(
+                                            const Duration(milliseconds: 50),
+                                            () => _bioFocus.requestFocus(),
+                                          );
+                                        }
+                                      },
+                                      onSave: _saveBio,
+                                    ),
+                                  ),
+                                ),
+                              ),
+
+                              const SizedBox(height: 12),
+
                               // ── Photos section ──────────────────────────
                               StreamBuilder<
                                   QuerySnapshot<Map<String, dynamic>>>(
@@ -711,40 +761,53 @@ class _ProfileScreenState extends State<ProfileScreen>
                                 builder: (context, photoSnap) {
                                   final photoDocs =
                                       photoSnap.data?.docs ?? [];
-                                  if (!widget.isOwnProfile &&
-                                      photoDocs.isEmpty) {
-                                    return const SizedBox.shrink();
-                                  }
                                   return Column(
                                     children: [
                                       _SectionCard(
                                         icon: Icons.photo_library_rounded,
                                         title: 'الصور (${photoDocs.length})',
                                         showMenu: true,
-                                        child: _PhotosGrid(
-                                          docs: photoDocs,
-                                          isOwn: widget.isOwnProfile,
-                                          selectMode: _selectMode,
-                                          selectedIds: _selectedPhotoIds,
-                                          onAddPhoto: _pickAndAddPhoto,
-                                          onEyeTap: _changePhotoVisibility,
-                                          onLongPress: (id) => setState(() {
-                                            _selectMode = true;
-                                            _selectedPhotoIds.add(id);
-                                          }),
-                                          onTapInSelect: (id) =>
-                                              setState(() {
-                                            if (_selectedPhotoIds
-                                                .contains(id)) {
-                                              _selectedPhotoIds.remove(id);
-                                              if (_selectedPhotoIds.isEmpty) {
-                                                _selectMode = false;
-                                              }
-                                            } else {
-                                              _selectedPhotoIds.add(id);
-                                            }
-                                          }),
-                                        ),
+                                        child: photoDocs.isEmpty &&
+                                                !widget.isOwnProfile
+                                            ? const SizedBox(
+                                                height: 60,
+                                                child: Center(
+                                                  child: Text(
+                                                    'لا توجد صور',
+                                                    style: TextStyle(
+                                                        color: Colors.white38,
+                                                        fontSize: 13),
+                                                  ),
+                                                ),
+                                              )
+                                            : _PhotosGrid(
+                                                docs: photoDocs,
+                                                isOwn: widget.isOwnProfile,
+                                                selectMode: _selectMode,
+                                                selectedIds: _selectedPhotoIds,
+                                                onAddPhoto: _pickAndAddPhoto,
+                                                onEyeTap:
+                                                    _changePhotoVisibility,
+                                                onLongPress: (id) =>
+                                                    setState(() {
+                                                  _selectMode = true;
+                                                  _selectedPhotoIds.add(id);
+                                                }),
+                                                onTapInSelect: (id) =>
+                                                    setState(() {
+                                                  if (_selectedPhotoIds
+                                                      .contains(id)) {
+                                                    _selectedPhotoIds
+                                                        .remove(id);
+                                                    if (_selectedPhotoIds
+                                                        .isEmpty) {
+                                                      _selectMode = false;
+                                                    }
+                                                  } else {
+                                                    _selectedPhotoIds.add(id);
+                                                  }
+                                                }),
+                                              ),
                                       ),
                                       const SizedBox(height: 12),
                                     ],
@@ -772,56 +835,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                               ),
 
                               const SizedBox(height: 12),
-
-                              // ── Bio section ─────────────────────────────
-                              if (widget.isOwnProfile ||
-                                  _canViewStat(bioVis)) ...[
-                                _SectionCard(
-                                  icon: Icons.person_outline_rounded,
-                                  title: 'السيرة الذاتية',
-                                  visibility:
-                                      widget.isOwnProfile ? bioVis : null,
-                                  onVisibilityTap: widget.isOwnProfile
-                                      ? () async {
-                                          final v = await _showPrivacySheet(
-                                              context);
-                                          if (v != null && mounted) {
-                                            await roomService.updateUserProfile(
-                                              uid: widget.targetUserId,
-                                              bioVisibility: v,
-                                            );
-                                          }
-                                        }
-                                      : null,
-                                  child: ValueListenableBuilder<bool>(
-                                    valueListenable: _editingBio,
-                                    builder: (_, editing, __) =>
-                                        ValueListenableBuilder<bool>(
-                                      valueListenable: _savingBio,
-                                      builder: (_, saving, __) => _BioContent(
-                                        bio: bio,
-                                        isOwn: widget.isOwnProfile,
-                                        editing: editing,
-                                        saving: saving,
-                                        controller: _bioCtrl,
-                                        focusNode: _bioFocus,
-                                        onTap: () {
-                                          if (widget.isOwnProfile && !editing) {
-                                            _bioCtrl.text = bio;
-                                            _editingBio.value = true;
-                                            Future.delayed(
-                                              const Duration(milliseconds: 50),
-                                              () => _bioFocus.requestFocus(),
-                                            );
-                                          }
-                                        },
-                                        onSave: _saveBio,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 12),
-                              ],
 
                               // ── Stats section ───────────────────────────
                               _SectionCard(
@@ -1347,11 +1360,7 @@ class _RoomsSectionState extends State<_RoomsSection> {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _stream,
       builder: (context, snapshot) {
-        // Filter to real rooms only (client-side for owner path)
-        final allDocs = snapshot.data?.docs ?? [];
-        final docs = allDocs
-            .where((d) => d.data()['isRealRoom'] == true)
-            .toList();
+        final docs = snapshot.data?.docs ?? [];
 
         return _SectionCard(
           icon: Icons.mic_rounded,
@@ -1583,6 +1592,7 @@ class _BioContent extends StatelessWidget {
   const _BioContent({
     required this.bio,
     required this.isOwn,
+    required this.canView,
     required this.editing,
     required this.saving,
     required this.controller,
@@ -1593,6 +1603,7 @@ class _BioContent extends StatelessWidget {
 
   final String bio;
   final bool isOwn;
+  final bool canView;
   final bool editing;
   final bool saving;
   final TextEditingController controller;
@@ -1602,7 +1613,28 @@ class _BioContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!isOwn && bio.isEmpty) return const SizedBox.shrink();
+    if (!isOwn && !canView) {
+      return const SizedBox(
+        height: 60,
+        child: Center(
+          child: Text(
+            'لا توجد نبذة',
+            style: TextStyle(color: Colors.white38, fontSize: 13),
+          ),
+        ),
+      );
+    }
+    if (!isOwn && bio.isEmpty) {
+      return const SizedBox(
+        height: 60,
+        child: Center(
+          child: Text(
+            'لا توجد نبذة',
+            style: TextStyle(color: Colors.white38, fontSize: 13),
+          ),
+        ),
+      );
+    }
 
     return GestureDetector(
       onTap: onTap,

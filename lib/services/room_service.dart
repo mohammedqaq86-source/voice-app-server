@@ -198,21 +198,17 @@ class RoomService {
         .snapshots();
   }
 
-  // Returns real rooms owned by [ownerId] ordered by last opened.
-  // Non-owner callers see only public rooms; owner sees all.
+  // Returns rooms the user has ever opened, ordered by last opened time.
+  // Uses the per-user openedRooms subcollection which is written by joinRoom.
   Stream<QuerySnapshot<Map<String, dynamic>>> profileRoomsStream(
     String ownerId, {
     bool isOwner = false,
   }) {
-    if (isOwner) {
-      // Reuse existing indexed query; filter isRealRoom client-side.
-      return myRoomsStream(ownerId: ownerId);
-    }
-    // Public rooms only — single equality where avoids composite-index requirement.
     return _firestore
-        .collection('rooms')
-        .where('ownerId', isEqualTo: ownerId)
-        .where('isPrivate', isEqualTo: false)
+        .collection('users')
+        .doc(ownerId)
+        .collection('openedRooms')
+        .orderBy('lastOpenedAt', descending: true)
         .snapshots();
   }
 
@@ -569,6 +565,14 @@ class RoomService {
 
     await updateRoomCounts(roomId: roomId, isOwner: isOwner);
 
+    // Record this room in the user's opened-rooms history so the profile page
+    // can display it via profileRoomsStream.
+    unawaited(_recordOpenedRoom(
+      userId: userId,
+      roomId: roomId,
+      roomData: roomData,
+    ));
+
     await sendSystemMessage(
       roomId: roomId,
       text: '$name joined the room',
@@ -577,6 +581,31 @@ class RoomService {
       image: image,
       isLeader: isOwner,
     );
+  }
+
+  Future<void> _recordOpenedRoom({
+    required String userId,
+    required String roomId,
+    required Map<String, dynamic> roomData,
+  }) async {
+    if (userId.isEmpty || roomId.isEmpty) return;
+    try {
+      await _firestore
+          .collection('users')
+          .doc(userId)
+          .collection('openedRooms')
+          .doc(roomId)
+          .set({
+        'roomId': roomId,
+        'title': roomData['title'] ?? '',
+        'image': roomData['image'] ?? '',
+        'ownerId': roomData['ownerId'] ?? '',
+        'isOpen': roomData['isOpen'] ?? false,
+        'usersCount': roomData['usersCount'] ?? 0,
+        'isRealRoom': true,
+        'lastOpenedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {}
   }
 
   Future<void> leaveRoom({
@@ -645,6 +674,13 @@ class RoomService {
         'speakersCount': 0,
         'updatedAt': FieldValue.serverTimestamp(),
       });
+      // Reflect closed state in the leaving user's openedRooms entry.
+      unawaited(_firestore
+          .collection('users')
+          .doc(userId)
+          .collection('openedRooms')
+          .doc(roomId)
+          .set({'isOpen': false, 'usersCount': 0}, SetOptions(merge: true)));
     } else {
       await updateRoomCounts(roomId: roomId, isOwner: false);
     }
