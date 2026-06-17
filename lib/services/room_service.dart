@@ -198,6 +198,24 @@ class RoomService {
         .snapshots();
   }
 
+  // Returns real rooms owned by [ownerId] ordered by last opened.
+  // Non-owner callers see only public rooms; owner sees all.
+  Stream<QuerySnapshot<Map<String, dynamic>>> profileRoomsStream(
+    String ownerId, {
+    bool isOwner = false,
+  }) {
+    if (isOwner) {
+      // Reuse existing indexed query; filter isRealRoom client-side.
+      return myRoomsStream(ownerId: ownerId);
+    }
+    // Public rooms only — single equality where avoids composite-index requirement.
+    return _firestore
+        .collection('rooms')
+        .where('ownerId', isEqualTo: ownerId)
+        .where('isPrivate', isEqualTo: false)
+        .snapshots();
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>> myInvitesStream({
     required String userId,
   }) {

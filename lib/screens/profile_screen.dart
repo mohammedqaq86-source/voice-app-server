@@ -5,7 +5,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import '../models/room.dart';
 import '../services/room_service.dart';
+import 'room_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({
@@ -33,17 +35,38 @@ class _ProfileScreenState extends State<ProfileScreen>
   late final AnimationController _bgController;
   late final Stream<DocumentSnapshot<Map<String, dynamic>>> _userStream;
 
+  // Bio editing
   final _bioCtrl = TextEditingController();
   final _bioFocus = FocusNode();
-
   final _editingBio = ValueNotifier<bool>(false);
   final _savingBio = ValueNotifier<bool>(false);
+
+  // Name inline editing
+  final _nameCtrl = TextEditingController();
+  final _nameFocus = FocusNode();
+  final _editingName = ValueNotifier<bool>(false);
+  final _savingName = ValueNotifier<bool>(false);
+
+  // Username inline editing
+  final _userCtrl = TextEditingController();
+  final _userFocus = FocusNode();
+  final _editingUsername = ValueNotifier<bool>(false);
+  final _savingUsername = ValueNotifier<bool>(false);
+
+  // 14-day restriction — kept in sync from the profile stream
+  Timestamp? _lastUsernameChangeAt;
+
+  // Avatar upload
   final _uploadingAvatar = ValueNotifier<bool>(false);
 
+  // Photo selection
   bool _selectMode = false;
   final Set<String> _selectedPhotoIds = {};
+
   bool _visitRecorded = false;
   bool _isFriend = false;
+
+  static final _usernameRegex = RegExp(r'^[a-zA-Z0-9_\.]+$');
 
   @override
   void initState() {
@@ -57,6 +80,12 @@ class _ProfileScreenState extends State<ProfileScreen>
     _bioFocus.addListener(() {
       if (!_bioFocus.hasFocus && _editingBio.value) _saveBio();
     });
+    _nameFocus.addListener(() {
+      if (!_nameFocus.hasFocus && _editingName.value) _saveName();
+    });
+    _userFocus.addListener(() {
+      if (!_userFocus.hasFocus && _editingUsername.value) _commitUsername();
+    });
 
     if (!widget.isOwnProfile) {
       _recordVisit();
@@ -69,11 +98,21 @@ class _ProfileScreenState extends State<ProfileScreen>
     _bgController.dispose();
     _bioCtrl.dispose();
     _bioFocus.dispose();
+    _nameCtrl.dispose();
+    _nameFocus.dispose();
+    _userCtrl.dispose();
+    _userFocus.dispose();
     _editingBio.dispose();
     _savingBio.dispose();
+    _editingName.dispose();
+    _savingName.dispose();
+    _editingUsername.dispose();
+    _savingUsername.dispose();
     _uploadingAvatar.dispose();
     super.dispose();
   }
+
+  // ── Friendship ──────────────────────────────────────────────────────────────
 
   Future<void> _checkFriendship() async {
     final doc = await FirebaseFirestore.instance
@@ -98,6 +137,8 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
+  // ── Bio ─────────────────────────────────────────────────────────────────────
+
   Future<void> _saveBio() async {
     if (!mounted) return;
     _editingBio.value = false;
@@ -108,6 +149,69 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
     if (mounted) _savingBio.value = false;
   }
+
+  // ── Name inline edit ────────────────────────────────────────────────────────
+
+  Future<void> _saveName() async {
+    if (!mounted) return;
+    _editingName.value = false;
+    final newName = _nameCtrl.text.trim();
+    if (newName.isEmpty) return;
+    _savingName.value = true;
+    await roomService.updateUserProfile(uid: widget.targetUserId, name: newName);
+    await FirebaseAuth.instance.currentUser?.updateDisplayName(newName);
+    if (mounted) _savingName.value = false;
+  }
+
+  // ── Username inline edit (14-day restriction) ───────────────────────────────
+
+  Future<void> _commitUsername() async {
+    if (!mounted) return;
+    _editingUsername.value = false;
+    final current = _userCtrl.text.trim().toLowerCase();
+    await _saveUsername(current);
+  }
+
+  Future<void> _saveUsername(String newUser) async {
+    if (!mounted) return;
+
+    // Format validation
+    if (newUser.length < 3 ||
+        newUser.length > 30 ||
+        !_usernameRegex.hasMatch(newUser)) {
+      _showSnack('المعرف غير صالح: 3-30 حرفاً إنجليزية وأرقام فقط');
+      return;
+    }
+
+    // 14-day restriction check
+    if (_lastUsernameChangeAt != null) {
+      final days =
+          DateTime.now().difference(_lastUsernameChangeAt!.toDate()).inDays;
+      if (days < 14) {
+        _showSnack('يمكنك تغيير المعرف بعد ${14 - days} يوم');
+        return;
+      }
+    }
+
+    _savingUsername.value = true;
+    await roomService.updateUserProfile(
+        uid: widget.targetUserId, username: newUser);
+    // Record the change timestamp
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.targetUserId)
+        .set({'lastUsernameChangeAt': FieldValue.serverTimestamp()},
+            SetOptions(merge: true));
+    if (mounted) _savingUsername.value = false;
+  }
+
+  void _showSnack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  // ── Avatar ──────────────────────────────────────────────────────────────────
 
   Future<void> _pickAndUploadAvatar() async {
     final picker = ImagePicker();
@@ -130,15 +234,13 @@ class _ProfileScreenState extends State<ProfileScreen>
       await roomService.updateUserProfile(uid: widget.targetUserId, photoUrl: url);
       await FirebaseAuth.instance.currentUser?.updatePhotoURL(url);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('فشل رفع الصورة: $e')),
-        );
-      }
+      _showSnack('فشل رفع الصورة: $e');
     } finally {
       if (mounted) _uploadingAvatar.value = false;
     }
   }
+
+  // ── Photos ──────────────────────────────────────────────────────────────────
 
   Future<void> _pickAndAddPhoto() async {
     final picker = ImagePicker();
@@ -161,16 +263,9 @@ class _ProfileScreenState extends State<ProfileScreen>
         fileName: 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg',
       );
       await roomService.addProfilePhoto(
-        uid: widget.targetUserId,
-        url: url,
-        visibility: visibility,
-      );
+          uid: widget.targetUserId, url: url, visibility: visibility);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('فشل إضافة الصورة: $e')),
-        );
-      }
+      _showSnack('فشل إضافة الصورة: $e');
     }
   }
 
@@ -258,7 +353,8 @@ class _ProfileScreenState extends State<ProfileScreen>
     });
     for (final id in ids) {
       if (action == 'delete') {
-        await roomService.deleteProfilePhoto(uid: widget.targetUserId, photoId: id);
+        await roomService.deleteProfilePhoto(
+            uid: widget.targetUserId, photoId: id);
       } else {
         await roomService.updateProfilePhotoVisibility(
           uid: widget.targetUserId,
@@ -269,136 +365,9 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
-  static final _usernameRegex = RegExp(r'^[a-zA-Z0-9_\.]+$');
+  // ── Visitors list ────────────────────────────────────────────────────────────
 
-  void _showEditDialog(Map<String, dynamic> profile) {
-    final nameCtrl = TextEditingController(text: profile['name'] ?? '');
-    final usernameCtrl = TextEditingController(text: profile['username'] ?? '');
-    final formKey = GlobalKey<FormState>();
-
-    showDialog(
-      context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          backgroundColor: const Color(0xFF1E1340),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Text(
-            'تعديل الملف الشخصي',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900),
-          ),
-          content: Form(
-            key: formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _editField(nameCtrl, 'الاسم', Icons.person_rounded,
-                    validator: (v) =>
-                        (v?.trim().isEmpty ?? true) ? 'الاسم مطلوب' : null),
-                const SizedBox(height: 12),
-                _editField(
-                  usernameCtrl,
-                  'المعرف (@username)',
-                  Icons.alternate_email_rounded,
-                  textDirection: TextDirection.ltr,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9_\.]')),
-                  ],
-                  validator: (v) {
-                    final val = v?.trim() ?? '';
-                    if (val.isEmpty) return 'المعرف مطلوب';
-                    if (val.length < 3) return '3 أحرف على الأقل';
-                    if (val.length > 30) return '30 حرفاً كحد أقصى';
-                    if (!_usernameRegex.hasMatch(val)) {
-                      return 'أحرف إنجليزية وأرقام فقط';
-                    }
-                    return null;
-                  },
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('إلغاء', style: TextStyle(color: Colors.white54)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF7B3FE4),
-                foregroundColor: Colors.white,
-              ),
-              onPressed: () async {
-                if (!(formKey.currentState?.validate() ?? false)) return;
-                Navigator.pop(ctx);
-                await roomService.updateUserProfile(
-                  uid: widget.targetUserId,
-                  name: nameCtrl.text.trim(),
-                  username: usernameCtrl.text.trim().toLowerCase(),
-                );
-                if (nameCtrl.text.trim().isNotEmpty) {
-                  await FirebaseAuth.instance.currentUser
-                      ?.updateDisplayName(nameCtrl.text.trim());
-                }
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('تم تحديث الملف الشخصي')),
-                  );
-                }
-              },
-              child: const Text('حفظ'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _editField(
-    TextEditingController ctrl,
-    String hint,
-    IconData icon, {
-    int maxLines = 1,
-    TextDirection? textDirection,
-    List<TextInputFormatter>? inputFormatters,
-    String? Function(String?)? validator,
-  }) {
-    return TextFormField(
-      controller: ctrl,
-      maxLines: maxLines,
-      textDirection: textDirection,
-      inputFormatters: inputFormatters,
-      validator: validator,
-      style: const TextStyle(color: Colors.white),
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: const TextStyle(color: Colors.white38),
-        prefixIcon: Icon(icon, color: Colors.white38, size: 20),
-        filled: true,
-        fillColor: Colors.white.withOpacity(0.08),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide.none,
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: Color(0xFF7B3FE4), width: 1.5),
-        ),
-        errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide:
-              BorderSide(color: Colors.redAccent.withOpacity(0.6), width: 1),
-        ),
-        focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: Colors.redAccent, width: 1.5),
-        ),
-        errorStyle: const TextStyle(color: Colors.redAccent, fontSize: 11),
-      ),
-    );
-  }
-
-  void _showVisitorsList(BuildContext context) {
+  void _showVisitorsList() {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF17112F),
@@ -435,20 +404,19 @@ class _ProfileScreenState extends State<ProfileScreen>
               const SizedBox(height: 12),
               Expanded(
                 child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: roomService.profileVisitorsStream(widget.targetUserId),
+                  stream:
+                      roomService.profileVisitorsStream(widget.targetUserId),
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
                       return const Center(
-                        child: CircularProgressIndicator(color: Colors.white),
-                      );
+                          child:
+                              CircularProgressIndicator(color: Colors.white));
                     }
                     final docs = snapshot.data?.docs ?? [];
                     if (docs.isEmpty) {
                       return const Center(
-                        child: Text(
-                          'لم يزر ملفك أحد بعد',
-                          style: TextStyle(color: Colors.white60),
-                        ),
+                        child: Text('لم يزر ملفك أحد بعد',
+                            style: TextStyle(color: Colors.white60)),
                       );
                     }
                     return ListView.builder(
@@ -457,35 +425,31 @@ class _ProfileScreenState extends State<ProfileScreen>
                       itemCount: docs.length,
                       itemBuilder: (context, i) {
                         final data = docs[i].data();
-                        final name =
+                        final vName =
                             (data['visitorName'] ?? 'مستخدم').toString();
-                        final image =
+                        final vImage =
                             (data['visitorImage'] ?? '').toString();
                         final time =
                             (data['visitTime'] as Timestamp?)?.toDate();
                         return ListTile(
                           leading: CircleAvatar(
-                            backgroundImage: image.isNotEmpty
-                                ? NetworkImage(image)
+                            backgroundImage: vImage.isNotEmpty
+                                ? NetworkImage(vImage)
                                 : null,
                             backgroundColor: const Color(0xFF2D1F5E),
-                            child: image.isEmpty
-                                ? const Icon(Icons.person, color: Colors.white)
+                            child: vImage.isEmpty
+                                ? const Icon(Icons.person,
+                                    color: Colors.white)
                                 : null,
                           ),
-                          title: Text(
-                            name,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                          title: Text(vName,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold)),
                           subtitle: time != null
-                              ? Text(
-                                  _formatTime(time),
+                              ? Text(_fmtTime(time),
                                   style: const TextStyle(
-                                      color: Colors.white54, fontSize: 12),
-                                )
+                                      color: Colors.white54, fontSize: 12))
                               : null,
                         );
                       },
@@ -500,9 +464,25 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  String _formatTime(DateTime time) {
-    final now = DateTime.now();
-    final diff = now.difference(time);
+  // ── Rooms navigation ─────────────────────────────────────────────────────────
+
+  Future<void> _openRoom(Map<String, dynamic> roomData, String roomId) async {
+    final isOpen = roomData['isOpen'] == true;
+    if (!isOpen) {
+      await roomService.openRoom(roomId: roomId);
+    }
+    if (!mounted) return;
+    final room = Room.fromMap(roomData, id: roomId);
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => RoomScreen(room: room, roomId: roomId)),
+    );
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────────
+
+  String _fmtTime(DateTime t) {
+    final diff = DateTime.now().difference(t);
     if (diff.inMinutes < 60) return 'منذ ${diff.inMinutes} دقيقة';
     if (diff.inHours < 24) return 'منذ ${diff.inHours} ساعة';
     return 'منذ ${diff.inDays} يوم';
@@ -515,6 +495,8 @@ class _ProfileScreenState extends State<ProfileScreen>
     return false;
   }
 
+  // ── Build ────────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Directionality(
@@ -523,10 +505,11 @@ class _ProfileScreenState extends State<ProfileScreen>
         backgroundColor: Colors.transparent,
         body: Stack(
           children: [
+            // Animated gradient background
             Positioned.fill(
               child: AnimatedBuilder(
                 animation: _bgController,
-                builder: (context, _) => CustomPaint(
+                builder: (_, __) => CustomPaint(
                   painter: _ProfileBgPainter(_bgController.value),
                 ),
               ),
@@ -559,17 +542,93 @@ class _ProfileScreenState extends State<ProfileScreen>
                   final usageHours =
                       (profile['usageHours'] as num?)?.toInt() ?? 0;
                   final country = (profile['country'] ?? '').toString();
-                  final allowMatureContent =
-                      profile['allowMatureContent'] == true;
 
+                  // Keep restriction timestamp in sync
+                  _lastUsernameChangeAt =
+                      profile['lastUsernameChangeAt'] as Timestamp?;
+
+                  // Sync bio/name/username only when not editing
                   if (!_editingBio.value && _bioCtrl.text != bio) {
                     _bioCtrl.text = bio;
                   }
+                  if (!_editingName.value && !_savingName.value) {
+                    _nameCtrl.text = name;
+                  }
+                  if (!_editingUsername.value && !_savingUsername.value) {
+                    _userCtrl.text = username;
+                  }
 
-                  // Determine whether this viewer can see the avatar
                   final canViewAvatar = widget.isOwnProfile ||
                       photoUrlVis == 'public' ||
                       (photoUrlVis == 'friends' && _isFriend);
+
+                  // ── Name inline widget ──────────────────────────────────
+                  final nameWidget = ValueListenableBuilder<bool>(
+                    valueListenable: _editingName,
+                    builder: (_, editingN, __) =>
+                        ValueListenableBuilder<bool>(
+                      valueListenable: _savingName,
+                      builder: (_, savingN, __) => _InlineTextField(
+                        value: name,
+                        isEditing: editingN,
+                        isSaving: savingN,
+                        isOwn: widget.isOwnProfile,
+                        controller: _nameCtrl,
+                        focusNode: _nameFocus,
+                        textStyle: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 0.3,
+                        ),
+                        onTap: () {
+                          _nameCtrl.text = name;
+                          _editingName.value = true;
+                          Future.delayed(
+                            const Duration(milliseconds: 50),
+                            () => _nameFocus.requestFocus(),
+                          );
+                        },
+                        onSubmit: _saveName,
+                      ),
+                    ),
+                  );
+
+                  // ── Username inline widget ──────────────────────────────
+                  final usernameWidget = ValueListenableBuilder<bool>(
+                    valueListenable: _editingUsername,
+                    builder: (_, editingU, __) =>
+                        ValueListenableBuilder<bool>(
+                      valueListenable: _savingUsername,
+                      builder: (_, savingU, __) => _InlineTextField(
+                        value: username.isEmpty ? '' : '@$username',
+                        isEditing: editingU,
+                        isSaving: savingU,
+                        isOwn: widget.isOwnProfile,
+                        controller: _userCtrl,
+                        focusNode: _userFocus,
+                        textDirection: TextDirection.ltr,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(
+                              RegExp(r'[a-zA-Z0-9_\.]')),
+                        ],
+                        textStyle: const TextStyle(
+                          color: Color(0xFF9B72F0),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        onTap: () {
+                          _userCtrl.text = username;
+                          _editingUsername.value = true;
+                          Future.delayed(
+                            const Duration(milliseconds: 50),
+                            () => _userFocus.requestFocus(),
+                          );
+                        },
+                        onSubmit: _commitUsername,
+                      ),
+                    ),
+                  );
 
                   return Column(
                     children: [
@@ -584,20 +643,14 @@ class _ProfileScreenState extends State<ProfileScreen>
                                   color: Colors.white),
                             ),
                             const Spacer(),
-                            if (widget.isOwnProfile) ...[
+                            if (widget.isOwnProfile)
                               IconButton(
-                                onPressed: () => _showVisitorsList(context),
+                                onPressed: _showVisitorsList,
                                 icon: const Icon(Icons.remove_red_eye_rounded,
                                     color: Colors.white70),
                                 tooltip: 'زوار ملفي',
-                              ),
-                              IconButton(
-                                onPressed: () => _showEditDialog(profile),
-                                icon: const Icon(Icons.edit_rounded,
-                                    color: Colors.white70),
-                                tooltip: 'تعديل',
-                              ),
-                            ] else
+                              )
+                            else
                               const SizedBox(width: 48),
                           ],
                         ),
@@ -624,12 +677,11 @@ class _ProfileScreenState extends State<ProfileScreen>
                             children: [
                               // ── Profile Header ──────────────────────────
                               _ProfileHeader(
-                                name: name,
-                                username: username,
-                                country: country,
                                 photoUrl: canViewAvatar ? photoUrl : '',
                                 photoUrlVisibility: photoUrlVis,
+                                isOnline: isOnline,
                                 isOwn: widget.isOwnProfile,
+                                country: country,
                                 uploadingAvatar: _uploadingAvatar,
                                 onPickAvatar: _pickAndUploadAvatar,
                                 onChangeAvatarVis: () async {
@@ -642,30 +694,32 @@ class _ProfileScreenState extends State<ProfileScreen>
                                     );
                                   }
                                 },
+                                nameWidget: nameWidget,
+                                usernameWidget: usernameWidget,
                               ),
 
                               const SizedBox(height: 14),
 
-                              // ── Action buttons (own profile) ────────────
-                              if (widget.isOwnProfile)
-                                _ActionButtonsRow(
-                                  allowMatureContent: allowMatureContent,
-                                  onPreview: () {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                          content: Text(
-                                              'المعاينة: كيف يرى الآخرون ملفك')),
-                                    );
-                                  },
-                                  onToggleMature: () async {
-                                    await roomService.updateUserProfile(
-                                      uid: widget.targetUserId,
-                                      allowMatureContent: !allowMatureContent,
-                                    );
-                                  },
-                                ),
+                              // ── Friends section ─────────────────────────
+                              _FriendsSection(
+                                targetUserId: widget.targetUserId,
+                                currentUserId: widget.currentUserId,
+                                currentUserName: widget.currentUserName,
+                                currentUserImage: widget.currentUserImage,
+                                roomService: roomService,
+                              ),
 
-                              const SizedBox(height: 14),
+                              const SizedBox(height: 12),
+
+                              // ── Rooms section ───────────────────────────
+                              _RoomsSection(
+                                targetUserId: widget.targetUserId,
+                                isOwn: widget.isOwnProfile,
+                                roomService: roomService,
+                                onTapRoom: _openRoom,
+                              ),
+
+                              const SizedBox(height: 12),
 
                               // ── Bio section ─────────────────────────────
                               if (widget.isOwnProfile ||
@@ -677,23 +731,22 @@ class _ProfileScreenState extends State<ProfileScreen>
                                       widget.isOwnProfile ? bioVis : null,
                                   onVisibilityTap: widget.isOwnProfile
                                       ? () async {
-                                          final newVis = await _showPrivacySheet(
+                                          final v = await _showPrivacySheet(
                                               context);
-                                          if (newVis != null && mounted) {
+                                          if (v != null && mounted) {
                                             await roomService.updateUserProfile(
                                               uid: widget.targetUserId,
-                                              bioVisibility: newVis,
+                                              bioVisibility: v,
                                             );
                                           }
                                         }
                                       : null,
                                   child: ValueListenableBuilder<bool>(
                                     valueListenable: _editingBio,
-                                    builder: (context, editing, _) =>
+                                    builder: (_, editing, __) =>
                                         ValueListenableBuilder<bool>(
                                       valueListenable: _savingBio,
-                                      builder: (context, saving, _) =>
-                                          _BioContent(
+                                      builder: (_, saving, __) => _BioContent(
                                         bio: bio,
                                         isOwn: widget.isOwnProfile,
                                         editing: editing,
@@ -745,8 +798,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                                           selectMode: _selectMode,
                                           selectedIds: _selectedPhotoIds,
                                           onAddPhoto: _pickAndAddPhoto,
-                                          onEyeTap: (id) =>
-                                              _changePhotoVisibility(id),
+                                          onEyeTap: _changePhotoVisibility,
                                           onLongPress: (id) => setState(() {
                                             _selectMode = true;
                                             _selectedPhotoIds.add(id);
@@ -788,7 +840,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                                   chartVisibility: chartVis,
                                   canView: _canViewStat,
                                   onChangeOnlineVis: () async {
-                                    final v = await _showPrivacySheet(context);
+                                    final v =
+                                        await _showPrivacySheet(context);
                                     if (v != null && mounted) {
                                       await roomService.updateUserProfile(
                                         uid: widget.targetUserId,
@@ -797,7 +850,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                                     }
                                   },
                                   onChangeJoinDateVis: () async {
-                                    final v = await _showPrivacySheet(context);
+                                    final v =
+                                        await _showPrivacySheet(context);
                                     if (v != null && mounted) {
                                       await roomService.updateUserProfile(
                                         uid: widget.targetUserId,
@@ -806,7 +860,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                                     }
                                   },
                                   onChangeUsageVis: () async {
-                                    final v = await _showPrivacySheet(context);
+                                    final v =
+                                        await _showPrivacySheet(context);
                                     if (v != null && mounted) {
                                       await roomService.updateUserProfile(
                                         uid: widget.targetUserId,
@@ -815,7 +870,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                                     }
                                   },
                                   onChangeChartVis: () async {
-                                    final v = await _showPrivacySheet(context);
+                                    final v =
+                                        await _showPrivacySheet(context);
                                     if (v != null && mounted) {
                                       await roomService.updateUserProfile(
                                         uid: widget.targetUserId,
@@ -855,7 +911,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                                         size: 20),
                                     label: const Text('إضافة صديق'),
                                     style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFF7B3FE4),
+                                      backgroundColor:
+                                          const Color(0xFF7B3FE4),
                                       foregroundColor: Colors.white,
                                       padding: const EdgeInsets.symmetric(
                                           vertical: 14),
@@ -882,30 +939,112 @@ class _ProfileScreenState extends State<ProfileScreen>
   }
 }
 
+// ─── Inline Text Field ────────────────────────────────────────────────────────
+// Shared widget for inline editing of name and username in the profile header.
+
+class _InlineTextField extends StatelessWidget {
+  const _InlineTextField({
+    required this.value,
+    required this.isEditing,
+    required this.isSaving,
+    required this.isOwn,
+    required this.controller,
+    required this.focusNode,
+    required this.textStyle,
+    required this.onTap,
+    required this.onSubmit,
+    this.textDirection = TextDirection.rtl,
+    this.inputFormatters,
+  });
+
+  final String value;
+  final bool isEditing;
+  final bool isSaving;
+  final bool isOwn;
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final TextStyle textStyle;
+  final VoidCallback onTap;
+  final VoidCallback onSubmit;
+  final TextDirection textDirection;
+  final List<TextInputFormatter>? inputFormatters;
+
+  @override
+  Widget build(BuildContext context) {
+    if (isSaving) {
+      return const SizedBox(
+        height: 20,
+        width: 20,
+        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38),
+      );
+    }
+    if (isEditing && isOwn) {
+      return IntrinsicWidth(
+        child: TextField(
+          controller: controller,
+          focusNode: focusNode,
+          textAlign: TextAlign.center,
+          textDirection: textDirection,
+          inputFormatters: inputFormatters,
+          style: textStyle,
+          decoration: const InputDecoration(
+            border: InputBorder.none,
+            isDense: true,
+            contentPadding: EdgeInsets.zero,
+          ),
+          onSubmitted: (_) => onSubmit(),
+        ),
+      );
+    }
+    if (value.isEmpty && !isOwn) return const SizedBox.shrink();
+    return GestureDetector(
+      onTap: isOwn ? onTap : null,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (value.isNotEmpty)
+            Text(value, style: textStyle),
+          if (isOwn && value.isEmpty)
+            Text(
+              textDirection == TextDirection.ltr ? '@username' : 'اكتب اسمك',
+              style: textStyle.copyWith(color: Colors.white30),
+            ),
+          if (isOwn) ...[
+            const SizedBox(width: 4),
+            Icon(Icons.edit_rounded, color: Colors.white30, size: 12),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 // ─── Profile Header ───────────────────────────────────────────────────────────
 
 class _ProfileHeader extends StatelessWidget {
   const _ProfileHeader({
-    required this.name,
-    required this.username,
-    required this.country,
     required this.photoUrl,
     required this.photoUrlVisibility,
+    required this.isOnline,
     required this.isOwn,
+    required this.country,
     required this.uploadingAvatar,
     required this.onPickAvatar,
     required this.onChangeAvatarVis,
+    required this.nameWidget,
+    required this.usernameWidget,
   });
 
-  final String name;
-  final String username;
-  final String country;
   final String photoUrl;
   final String photoUrlVisibility;
+  final bool isOnline;
   final bool isOwn;
+  final String country;
   final ValueNotifier<bool> uploadingAvatar;
   final VoidCallback onPickAvatar;
   final VoidCallback onChangeAvatarVis;
+  final Widget nameWidget;
+  final Widget usernameWidget;
 
   @override
   Widget build(BuildContext context) {
@@ -919,101 +1058,109 @@ class _ProfileHeader extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // Avatar with eye icon + camera icon
+          // Avatar with overlay icons
           ValueListenableBuilder<bool>(
             valueListenable: uploadingAvatar,
-            builder: (context, uploading, _) {
-              return Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  // Outer glow ring
-                  Container(
-                    width: 114,
-                    height: 114,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFF7B3FE4), width: 2.5),
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFF7B3FE4).withOpacity(0.45),
-                          blurRadius: 22,
-                          spreadRadius: 2,
+            builder: (_, uploading, __) => Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // Glow ring
+                Container(
+                  width: 114,
+                  height: 114,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                        color: const Color(0xFF7B3FE4), width: 2.5),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFF7B3FE4).withOpacity(0.45),
+                        blurRadius: 22,
+                        spreadRadius: 2,
+                      ),
+                    ],
+                  ),
+                  child: uploading
+                      ? const Center(
+                          child: CircularProgressIndicator(
+                              color: Colors.white, strokeWidth: 2))
+                      : CircleAvatar(
+                          radius: 55,
+                          backgroundImage: photoUrl.isNotEmpty
+                              ? NetworkImage(photoUrl)
+                              : null,
+                          backgroundColor: const Color(0xFF2D1F5E),
+                          child: photoUrl.isEmpty
+                              ? const Icon(Icons.person,
+                                  size: 54, color: Colors.white54)
+                              : null,
                         ),
-                      ],
+                ),
+
+                // Online / offline dot — bottom-left of avatar
+                Positioned(
+                  bottom: 4,
+                  left: 4,
+                  child: Container(
+                    width: 16,
+                    height: 16,
+                    decoration: BoxDecoration(
+                      color: isOnline
+                          ? const Color(0xFF4CAF50)
+                          : Colors.grey.shade600,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFF17112F), width: 2.5),
                     ),
-                    child: uploading
-                        ? const Center(
-                            child: CircularProgressIndicator(
-                                color: Colors.white, strokeWidth: 2))
-                        : CircleAvatar(
-                            radius: 55,
-                            backgroundImage: photoUrl.isNotEmpty
-                                ? NetworkImage(photoUrl)
-                                : null,
-                            backgroundColor: const Color(0xFF2D1F5E),
-                            child: photoUrl.isEmpty
-                                ? const Icon(Icons.person,
-                                    size: 54, color: Colors.white54)
-                                : null,
-                          ),
+                  ),
+                ),
+
+                // Eye icon — top-left (owner only)
+                if (isOwn)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    child: GestureDetector(
+                      onTap: uploading ? null : onChangeAvatarVis,
+                      child: Container(
+                        padding: const EdgeInsets.all(5),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF17112F),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                              color: Colors.white.withOpacity(0.2)),
+                        ),
+                        child: _EyeIconWidget(
+                            visibility: photoUrlVisibility, size: 14),
+                      ),
+                    ),
                   ),
 
-                  // Eye icon — top-left corner (visibility control for owner)
-                  if (isOwn)
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      child: GestureDetector(
-                        onTap: uploading ? null : onChangeAvatarVis,
-                        child: Container(
-                          padding: const EdgeInsets.all(5),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF17112F),
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                                color: Colors.white.withOpacity(0.2)),
-                          ),
-                          child: _EyeIconWidget(
-                              visibility: photoUrlVisibility, size: 14),
+                // Camera — bottom-right (owner only)
+                if (isOwn)
+                  Positioned(
+                    bottom: 0,
+                    right: 0,
+                    child: GestureDetector(
+                      onTap: uploading ? null : onPickAvatar,
+                      child: Container(
+                        padding: const EdgeInsets.all(7),
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF7B3FE4),
+                          shape: BoxShape.circle,
                         ),
+                        child: const Icon(Icons.camera_alt_rounded,
+                            color: Colors.white, size: 16),
                       ),
                     ),
-
-                  // Camera icon — bottom-right corner (upload for owner)
-                  if (isOwn)
-                    Positioned(
-                      bottom: 0,
-                      right: 0,
-                      child: GestureDetector(
-                        onTap: uploading ? null : onPickAvatar,
-                        child: Container(
-                          padding: const EdgeInsets.all(7),
-                          decoration: const BoxDecoration(
-                            color: Color(0xFF7B3FE4),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.camera_alt_rounded,
-                              color: Colors.white, size: 16),
-                        ),
-                      ),
-                    ),
-                ],
-              );
-            },
+                  ),
+              ],
+            ),
           ),
 
           const SizedBox(height: 14),
 
-          // Name
-          Text(
-            name,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 0.3,
-            ),
-          ),
+          // Name (inline-editable for owner)
+          nameWidget,
 
           const SizedBox(height: 4),
 
@@ -1021,25 +1168,13 @@ class _ProfileHeader extends StatelessWidget {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (username.isNotEmpty) ...[
-                Text(
-                  '@$username',
-                  style: const TextStyle(
-                    color: Color(0xFF9B72F0),
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                if (country.isNotEmpty) const SizedBox(width: 6),
+              usernameWidget,
+              if (country.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Text(country,
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 13)),
               ],
-              if (country.isNotEmpty)
-                Text(
-                  country,
-                  style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 13,
-                  ),
-                ),
             ],
           ),
         ],
@@ -1048,128 +1183,308 @@ class _ProfileHeader extends StatelessWidget {
   }
 }
 
-// ─── Action Buttons Row ───────────────────────────────────────────────────────
+// ─── Friends Section ──────────────────────────────────────────────────────────
 
-class _ActionButtonsRow extends StatelessWidget {
-  const _ActionButtonsRow({
-    required this.allowMatureContent,
-    required this.onPreview,
-    required this.onToggleMature,
+class _FriendsSection extends StatefulWidget {
+  const _FriendsSection({
+    required this.targetUserId,
+    required this.currentUserId,
+    required this.currentUserName,
+    required this.currentUserImage,
+    required this.roomService,
   });
 
-  final bool allowMatureContent;
-  final VoidCallback onPreview;
-  final VoidCallback onToggleMature;
+  final String targetUserId;
+  final String currentUserId;
+  final String currentUserName;
+  final String currentUserImage;
+  final RoomService roomService;
+
+  @override
+  State<_FriendsSection> createState() => _FriendsSectionState();
+}
+
+class _FriendsSectionState extends State<_FriendsSection> {
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _stream;
+
+  @override
+  void initState() {
+    super.initState();
+    _stream = widget.roomService.friendsStream(userId: widget.targetUserId);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.04),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.07)),
-      ),
-      child: Row(
-        children: [
-          // Preview button
-          GestureDetector(
-            onTap: onPreview,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: Colors.white.withOpacity(0.15)),
-              ),
-              child: const Text(
-                'المعاينة',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                ),
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _stream,
+      builder: (context, snapshot) {
+        final docs = snapshot.data?.docs ?? [];
+        final isLoading = snapshot.connectionState == ConnectionState.waiting;
+
+        Widget child;
+        if (isLoading) {
+          child = const SizedBox(
+            height: 60,
+            child: Center(
+              child: CircularProgressIndicator(
+                  color: Colors.white38, strokeWidth: 2),
+            ),
+          );
+        } else if (docs.isEmpty) {
+          child = const SizedBox(
+            height: 60,
+            child: Center(
+              child: Text(
+                'لا يوجد أصدقاء بعد',
+                style: TextStyle(color: Colors.white38, fontSize: 13),
               ),
             ),
-          ),
-
-          const SizedBox(width: 10),
-
-          // Mature content badge
-          Expanded(
-            child: Row(
-              children: [
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: Colors.red.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Colors.red.withOpacity(0.35)),
-                  ),
-                  child: const Text(
-                    '18+',
-                    style: TextStyle(
-                      color: Colors.redAccent,
-                      fontSize: 10,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                const Expanded(
-                  child: Text(
-                    'محتوى غير لائق',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(width: 8),
-
-          // Toggle
-          GestureDetector(
-            onTap: onToggleMature,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              width: 46,
-              height: 26,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(13),
-                color: allowMatureContent
-                    ? const Color(0xFF7B3FE4)
-                    : Colors.white.withOpacity(0.15),
-              ),
-              child: Stack(
-                children: [
-                  AnimatedPositioned(
-                    duration: const Duration(milliseconds: 200),
-                    curve: Curves.easeInOut,
-                    right: allowMatureContent ? 2 : null,
-                    left: allowMatureContent ? null : 2,
-                    top: 3,
-                    child: Container(
-                      width: 20,
-                      height: 20,
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
+          );
+        } else {
+          child = SizedBox(
+            height: 80,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: docs.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 14),
+              itemBuilder: (_, i) {
+                final d = docs[i].data();
+                final uid = (d['userId'] ?? '').toString();
+                final friendName = (d['name'] ?? '').toString();
+                final image = (d['image'] ?? '').toString();
+                return GestureDetector(
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ProfileScreen(
+                        targetUserId: uid,
+                        currentUserId: widget.currentUserId,
+                        currentUserName: widget.currentUserName,
+                        currentUserImage: widget.currentUserImage,
                       ),
                     ),
                   ),
-                ],
-              ),
+                  child: SizedBox(
+                    width: 56,
+                    child: Column(
+                      children: [
+                        CircleAvatar(
+                          radius: 26,
+                          backgroundImage: image.isNotEmpty
+                              ? NetworkImage(image)
+                              : null,
+                          backgroundColor: const Color(0xFF2D1F5E),
+                          child: image.isEmpty
+                              ? const Icon(Icons.person,
+                                  color: Colors.white54, size: 22)
+                              : null,
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          friendName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
-          ),
-        ],
-      ),
+          );
+        }
+
+        return _SectionCard(
+          icon: Icons.people_rounded,
+          title: 'الأصدقاء (${docs.length})',
+          showMenu: false,
+          child: child,
+        );
+      },
+    );
+  }
+}
+
+// ─── Rooms Section ────────────────────────────────────────────────────────────
+
+class _RoomsSection extends StatefulWidget {
+  const _RoomsSection({
+    required this.targetUserId,
+    required this.isOwn,
+    required this.roomService,
+    required this.onTapRoom,
+  });
+
+  final String targetUserId;
+  final bool isOwn;
+  final RoomService roomService;
+  final Future<void> Function(Map<String, dynamic> data, String roomId) onTapRoom;
+
+  @override
+  State<_RoomsSection> createState() => _RoomsSectionState();
+}
+
+class _RoomsSectionState extends State<_RoomsSection> {
+  late final Stream<QuerySnapshot<Map<String, dynamic>>> _stream;
+
+  @override
+  void initState() {
+    super.initState();
+    _stream = widget.roomService.profileRoomsStream(
+      widget.targetUserId,
+      isOwner: widget.isOwn,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _stream,
+      builder: (context, snapshot) {
+        // Filter to real rooms only (client-side for owner path)
+        final allDocs = snapshot.data?.docs ?? [];
+        final docs = allDocs
+            .where((d) => d.data()['isRealRoom'] == true)
+            .toList();
+
+        if (docs.isEmpty &&
+            snapshot.connectionState != ConnectionState.waiting) {
+          return const SizedBox.shrink();
+        }
+        return _SectionCard(
+          icon: Icons.mic_rounded,
+          title: 'الغرف (${docs.length})',
+          showMenu: false,
+          child: snapshot.connectionState == ConnectionState.waiting
+              ? const SizedBox(
+                  height: 60,
+                  child: Center(
+                    child: CircularProgressIndicator(
+                        color: Colors.white38, strokeWidth: 2),
+                  ),
+                )
+              : Column(
+                  children: docs.map((doc) {
+                    final data = doc.data();
+                    final roomId = doc.id;
+                    final title = (data['title'] ?? 'غرفة').toString();
+                    final image = (data['image'] ?? '').toString();
+                    final isOpen = data['isOpen'] == true;
+                    final members =
+                        (data['usersCount'] as num?)?.toInt() ?? 0;
+
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: InkWell(
+                        onTap: () => widget.onTapRoom(data, roomId),
+                        borderRadius: BorderRadius.circular(14),
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.05),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.07)),
+                          ),
+                          child: Row(
+                            children: [
+                              // Room image
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: image.isNotEmpty
+                                    ? Image.network(image,
+                                        width: 52,
+                                        height: 52,
+                                        fit: BoxFit.cover)
+                                    : Container(
+                                        width: 52,
+                                        height: 52,
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFF2D1F5E),
+                                          borderRadius:
+                                              BorderRadius.circular(10),
+                                        ),
+                                        child: const Icon(
+                                            Icons.mic_rounded,
+                                            color: Colors.white38,
+                                            size: 24),
+                                      ),
+                              ),
+                              const SizedBox(width: 12),
+                              // Title + member count
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      title,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Row(
+                                      children: [
+                                        const Icon(Icons.people_outlined,
+                                            color: Colors.white38, size: 13),
+                                        const SizedBox(width: 4),
+                                        Text('$members',
+                                            style: const TextStyle(
+                                                color: Colors.white38,
+                                                fontSize: 12)),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              // Open / closed badge
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 4),
+                                decoration: BoxDecoration(
+                                  color: isOpen
+                                      ? const Color(0xFF4CAF50)
+                                          .withOpacity(0.15)
+                                      : Colors.white.withOpacity(0.06),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color: isOpen
+                                        ? const Color(0xFF4CAF50)
+                                            .withOpacity(0.4)
+                                        : Colors.white.withOpacity(0.1),
+                                  ),
+                                ),
+                                child: Text(
+                                  isOpen ? 'مفتوحة' : 'مغلقة',
+                                  style: TextStyle(
+                                    color: isOpen
+                                        ? const Color(0xFF4CAF50)
+                                        : Colors.white38,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+        );
+      },
     );
   }
 }
@@ -1226,18 +1541,19 @@ class _SectionCard extends StatelessWidget {
                     onTap: onVisibilityTap,
                     child: Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: _EyeIconWidget(visibility: visibility!, size: 17),
+                      child:
+                          _EyeIconWidget(visibility: visibility!, size: 17),
                     ),
                   ),
                 if (showSettings)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4),
                     child: Icon(Icons.settings_rounded,
                         color: Colors.white38, size: 17),
                   ),
                 if (showMenu)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 2),
+                  const Padding(
+                    padding: EdgeInsets.only(left: 2),
                     child: Icon(Icons.more_vert_rounded,
                         color: Colors.white38, size: 17),
                   ),
@@ -1326,7 +1642,8 @@ class _BioContent extends StatelessWidget {
                     bio.isEmpty ? 'اكتب نبذة عنك...' : bio,
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      color: bio.isEmpty ? Colors.white30 : Colors.white70,
+                      color:
+                          bio.isEmpty ? Colors.white30 : Colors.white70,
                       fontSize: 14,
                       height: 1.5,
                     ),
@@ -1375,7 +1692,6 @@ class _PhotosGrid extends StatelessWidget {
       ),
       itemCount: itemCount,
       itemBuilder: (_, i) {
-        // Add photo tile (first cell for owner)
         if (isOwn && i == 0) {
           return GestureDetector(
             onTap: onAddPhoto,
@@ -1395,13 +1711,12 @@ class _PhotosGrid extends StatelessWidget {
           );
         }
 
-        final docIndex = isOwn ? i - 1 : i;
-        final data = docs[docIndex].data();
+        final idx = isOwn ? i - 1 : i;
+        final data = docs[idx].data();
         final url = (data['url'] as String?) ?? '';
         final vis = (data['visibility'] as String?) ?? 'public';
-        // Treat legacy 'private' as 'hidden'
         final displayVis = vis == 'private' ? 'hidden' : vis;
-        final id = docs[docIndex].id;
+        final id = docs[idx].id;
         final isSelected = selectedIds.contains(id);
 
         return GestureDetector(
@@ -1413,10 +1728,9 @@ class _PhotosGrid extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(10),
                 child: url.isNotEmpty
-                    ? Image.network(
-                        url,
+                    ? Image.network(url,
                         fit: BoxFit.cover,
-                        loadingBuilder: (_, child, progress) => progress == null
+                        loadingBuilder: (_, child, p) => p == null
                             ? child
                             : Container(
                                 color: Colors.white.withOpacity(0.05),
@@ -1425,8 +1739,7 @@ class _PhotosGrid extends StatelessWidget {
                                       strokeWidth: 2,
                                       color: Colors.white24),
                                 ),
-                              ),
-                      )
+                              ))
                     : Container(
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.05),
@@ -1434,8 +1747,6 @@ class _PhotosGrid extends StatelessWidget {
                         ),
                       ),
               ),
-
-              // Eye icon — top-right corner (own profile only, not in select mode)
               if (isOwn && !selectMode)
                 Positioned(
                   top: 5,
@@ -1452,8 +1763,6 @@ class _PhotosGrid extends StatelessWidget {
                     ),
                   ),
                 ),
-
-              // Selection overlay
               if (selectMode && isSelected)
                 Container(
                   decoration: BoxDecoration(
@@ -1521,25 +1830,24 @@ class _StatsSection extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Online status
         if (isOwn || canView(onlineVisibility))
           _StatRow(
             leading: Container(
               width: 10,
               height: 10,
               decoration: BoxDecoration(
-                color: isOnline ? const Color(0xFF4CAF50) : Colors.white24,
+                color: isOnline
+                    ? const Color(0xFF4CAF50)
+                    : Colors.white24,
                 shape: BoxShape.circle,
               ),
             ),
             label: 'متصل',
-            value: isOnline ? '' : '',
+            value: '',
             visibility: onlineVisibility,
             isOwn: isOwn,
             onVisibilityTap: onChangeOnlineVis,
           ),
-
-        // Join date
         if (joinedAt != null && (isOwn || canView(joinDateVisibility))) ...[
           const SizedBox(height: 10),
           _StatRow(
@@ -1552,8 +1860,6 @@ class _StatsSection extends StatelessWidget {
             onVisibilityTap: onChangeJoinDateVis,
           ),
         ],
-
-        // Usage hours
         if (isOwn || canView(usageVisibility)) ...[
           const SizedBox(height: 10),
           _StatRow(
@@ -1566,8 +1872,6 @@ class _StatsSection extends StatelessWidget {
             onVisibilityTap: onChangeUsageVis,
           ),
         ],
-
-        // Activity chart
         if (isOwn || canView(chartVisibility)) ...[
           const SizedBox(height: 14),
           Row(
@@ -1585,7 +1889,8 @@ class _StatsSection extends StatelessWidget {
                   padding: const EdgeInsets.only(right: 4, left: 8),
                   child: GestureDetector(
                     onTap: onChangeChartVis,
-                    child: _EyeIconWidget(visibility: chartVisibility, size: 15),
+                    child: _EyeIconWidget(
+                        visibility: chartVisibility, size: 15),
                   ),
                 ),
             ],
@@ -1619,24 +1924,18 @@ class _StatRow extends StatelessWidget {
       children: [
         leading,
         const SizedBox(width: 10),
-        Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        Text(label,
+            style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 13,
+                fontWeight: FontWeight.w600)),
         const Spacer(),
         if (value.isNotEmpty)
-          Text(
-            value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 13,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
+          Text(value,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700)),
         if (isOwn) ...[
           const SizedBox(width: 8),
           GestureDetector(
@@ -1701,18 +2000,14 @@ class _PrivacyOption extends StatelessWidget {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                Text(
-                  subtitle,
-                  style: const TextStyle(color: Colors.white38, fontSize: 11),
-                ),
+                Text(label,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700)),
+                Text(subtitle,
+                    style: const TextStyle(
+                        color: Colors.white38, fontSize: 11)),
               ],
             ),
           ],
@@ -1748,32 +2043,27 @@ class _SelectionBar extends StatelessWidget {
       color: const Color(0xFF1E1340).withOpacity(0.95),
       child: Row(
         children: [
-          Text(
-            '$count مختار',
-            style: const TextStyle(
-                color: Colors.white70,
-                fontSize: 12,
-                fontWeight: FontWeight.w700),
-          ),
+          Text('$count مختار',
+              style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700)),
           const Spacer(),
           _BarBtn(
-            icon: Icons.remove_red_eye_rounded,
-            label: 'عام',
-            color: Colors.greenAccent,
-            onTap: onPublic,
-          ),
+              icon: Icons.remove_red_eye_rounded,
+              label: 'عام',
+              color: Colors.greenAccent,
+              onTap: onPublic),
           _BarBtn(
-            icon: Icons.people_rounded,
-            label: 'أصدقاء',
-            color: Colors.blueAccent,
-            onTap: onFriends,
-          ),
+              icon: Icons.people_rounded,
+              label: 'أصدقاء',
+              color: Colors.blueAccent,
+              onTap: onFriends),
           _BarBtn(
-            icon: Icons.visibility_off_rounded,
-            label: 'مخفي',
-            color: Colors.orangeAccent,
-            onTap: onHidden,
-          ),
+              icon: Icons.visibility_off_rounded,
+              label: 'مخفي',
+              color: Colors.orangeAccent,
+              onTap: onHidden),
           IconButton(
             onPressed: onDelete,
             icon: const Icon(Icons.delete_outline_rounded,
@@ -1834,45 +2124,39 @@ class _ActivityChartPainter extends CustomPainter {
       ..color = Colors.white.withOpacity(0.15)
       ..strokeWidth = 1;
 
-    // Draw x-axis
-    canvas.drawLine(
-        Offset(0, size.height - 12), Offset(size.width, size.height - 12), axisPaint);
+    canvas.drawLine(Offset(0, size.height - 12),
+        Offset(size.width, size.height - 12), axisPaint);
 
-    // Simulate a simple bar chart with mock data
     final rng = math.Random(42);
-    final barCount = 28;
+    const barCount = 28;
     final barWidth = size.width / (barCount * 1.6);
     final gap = (size.width - barWidth * barCount) / (barCount + 1);
     final maxBarH = size.height - 20.0;
 
     for (int i = 0; i < barCount; i++) {
-      final heightFraction = rng.nextDouble() * 0.7 + (i % 7 == 0 ? 0.3 : 0);
-      final barH = heightFraction.clamp(0.05, 1.0) * maxBarH;
+      final h = (rng.nextDouble() * 0.7 + (i % 7 == 0 ? 0.3 : 0))
+              .clamp(0.05, 1.0) *
+          maxBarH;
       final x = gap + i * (barWidth + gap);
-      final rect = Rect.fromLTWH(
-        x,
-        size.height - 12 - barH,
-        barWidth,
-        barH,
-      );
       canvas.drawRRect(
-        RRect.fromRectAndRadius(rect, const Radius.circular(3)),
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, size.height - 12 - h, barWidth, h),
+          const Radius.circular(3),
+        ),
         barPaint,
       );
     }
 
-    // Year labels
     final labelStyle = TextStyle(
-      color: Colors.white.withOpacity(0.35),
-      fontSize: 9,
-    );
+        color: Colors.white.withOpacity(0.35), fontSize: 9);
     const years = ['2024', '2025', '2026'];
     for (int y = 0; y < years.length; y++) {
       final tp = TextPainter(
         text: TextSpan(text: years[y], style: labelStyle),
         textDirection: TextDirection.ltr,
       )..layout();
-      tp.paint(canvas,
+      tp.paint(
+          canvas,
           Offset(size.width * (y / (years.length - 1)) - tp.width / 2,
               size.height - 10));
     }
@@ -1892,18 +2176,20 @@ class _ProfileBgPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final rect = Offset.zero & size;
-    final basePaint = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          Color(0xFF170D3F),
-          Color(0xFF2B174D),
-          Color(0xFF102C6B),
-          Color(0xFF4B245B),
-        ],
-      ).createShader(rect);
-    canvas.drawRect(rect, basePaint);
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color(0xFF170D3F),
+            Color(0xFF2B174D),
+            Color(0xFF102C6B),
+            Color(0xFF4B245B),
+          ],
+        ).createShader(rect),
+    );
 
     _drawWave(canvas, size,
         phase: value * math.pi * 2,
