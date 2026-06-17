@@ -326,7 +326,10 @@ class RoomService {
     try {
       final batch = _firestore.batch();
 
-      batch.set(
+      // Use update (not set+merge) so a delayed or offline-queued heartbeat
+      // cannot recreate a member doc that was already deleted on leave.
+      // If the doc is gone the batch throws, which we silently swallow below.
+      batch.update(
         _firestore
             .collection('rooms')
             .doc(roomId)
@@ -336,7 +339,6 @@ class RoomService {
           'isOnline': true,
           'lastSeen': FieldValue.serverTimestamp(),
         },
-        SetOptions(merge: true),
       );
 
       batch.set(
@@ -417,6 +419,36 @@ class RoomService {
     } catch (_) {
       // Don't block the join operation if cleanup fails.
     }
+  }
+
+  /// Called when the current user lands on the home screen (app launch or
+  /// return from background).  Removes any stale room membership that was left
+  /// behind when the app was killed / crashed while the user was in a room.
+  Future<void> cleanupSelfPresence({required String userId}) async {
+    if (userId.isEmpty) return;
+    try {
+      final userDoc = await _firestore.collection('users').doc(userId).get();
+      if (!userDoc.exists) return;
+
+      final data = userDoc.data()!;
+      final currentRoomId = (data['currentRoomId'] as String?) ?? '';
+
+      if (currentRoomId.isNotEmpty) {
+        // leaveRoom handles leadership transfer, member deletion, count
+        // updates, and clearing global user presence in one pass.
+        await leaveRoom(roomId: currentRoomId, userId: userId);
+      } else if (data['isOnline'] == true) {
+        // No tracked room but isOnline flag is still set — clear it.
+        await _firestore.collection('users').doc(userId).set(
+          {
+            'isOnline': false,
+            'currentRoomId': null,
+            'lastSeen': FieldValue.serverTimestamp(),
+          },
+          SetOptions(merge: true),
+        );
+      }
+    } catch (_) {}
   }
 
   Future<void> cleanupLegacyRoomMembers({required String roomId}) async {
@@ -591,6 +623,8 @@ class RoomService {
     if (remaining.docs.isEmpty) {
       await roomRef.update({
         'isOpen': false,
+        'usersCount': 0,
+        'speakersCount': 0,
         'updatedAt': FieldValue.serverTimestamp(),
       });
     } else {
@@ -1366,6 +1400,14 @@ class RoomService {
     String? bio,
     String? country,
     String? photoUrl,
+    String? photoUrlVisibility,
+    String? bioVisibility,
+    String? photosVisibility,
+    bool? allowMatureContent,
+    String? onlineVisibility,
+    String? joinDateVisibility,
+    String? usageVisibility,
+    String? chartVisibility,
   }) async {
     final updates = <String, dynamic>{};
     if (name != null) updates['name'] = name;
@@ -1373,6 +1415,14 @@ class RoomService {
     if (bio != null) updates['bio'] = bio;
     if (country != null) updates['country'] = country;
     if (photoUrl != null) updates['photoUrl'] = photoUrl;
+    if (photoUrlVisibility != null) updates['photoUrlVisibility'] = photoUrlVisibility;
+    if (bioVisibility != null) updates['bioVisibility'] = bioVisibility;
+    if (photosVisibility != null) updates['photosVisibility'] = photosVisibility;
+    if (allowMatureContent != null) updates['allowMatureContent'] = allowMatureContent;
+    if (onlineVisibility != null) updates['onlineVisibility'] = onlineVisibility;
+    if (joinDateVisibility != null) updates['joinDateVisibility'] = joinDateVisibility;
+    if (usageVisibility != null) updates['usageVisibility'] = usageVisibility;
+    if (chartVisibility != null) updates['chartVisibility'] = chartVisibility;
     if (updates.isEmpty) return;
     await _firestore.collection('users').doc(uid).set(updates, SetOptions(merge: true));
   }
@@ -1493,6 +1543,7 @@ class RoomService {
   Stream<QuerySnapshot<Map<String, dynamic>>> profilePhotosStream(
     String uid, {
     bool isOwner = false,
+    bool isFriend = false,
   }) {
     final col = _firestore
         .collection('users')
@@ -1502,8 +1553,10 @@ class RoomService {
     if (isOwner) {
       return col.orderBy('createdAt', descending: true).snapshots();
     }
-    // Non-owner: filter by public only without orderBy to avoid requiring a
-    // composite Firestore index (visibility + createdAt).
+    // Avoid composite index by not using orderBy alongside where.
+    if (isFriend) {
+      return col.where('visibility', whereIn: ['public', 'friends']).snapshots();
+    }
     return col.where('visibility', isEqualTo: 'public').snapshots();
   }
 

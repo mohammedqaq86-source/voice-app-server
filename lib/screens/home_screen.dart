@@ -32,9 +32,10 @@ class _HomeScreenState extends State<HomeScreen>
   late final AnimationController backgroundController;
   late final Stream<QuerySnapshot<Map<String, dynamic>>> _publicRoomsStream;
 
-  // Tracks rooms already passed to closeRoomIfEmpty this session so we don't
-  // hammer Firestore with redundant reads on every stream emission.
-  final Set<String> _cleanedRoomIds = {};
+  // Tracks the last time each room was passed to closeRoomIfEmpty.
+  // Re-checking is allowed after 5 minutes so rooms that reappear with stale
+  // state (e.g. due to a replayed offline write) are eventually cleaned again.
+  final Map<String, DateTime> _lastCleanedAt = {};
 
   User? get firebaseUser => FirebaseAuth.instance.currentUser;
 
@@ -76,6 +77,13 @@ class _HomeScreenState extends State<HomeScreen>
     )..repeat(reverse: true);
 
     _publicRoomsStream = safeFirestoreStream(roomService.publicOpenRoomsStream());
+
+    // On every app launch (including after the app was killed while the user
+    // was in a room), remove any stale member doc and clear online presence so
+    // the user doesn't appear as a room participant while on the home screen.
+    if (currentUserId != 'guest_user') {
+      unawaited(roomService.cleanupSelfPresence(userId: currentUserId));
+    }
   }
 
   @override
@@ -497,20 +505,29 @@ class _HomeScreenState extends State<HomeScreen>
                         final snapshotData = snapshot.data as dynamic;
                         final docs = snapshotData?.docs ?? [];
 
-                        // Check each room once per session: if it has no real
-                        // members, close it. Skip rooms created in the last
-                        // 3 minutes — on web the Firestore SDK may deliver the
-                        // room document to the listener slightly before the
-                        // member sub-document is in the local cache, so a fresh
-                        // room could be wrongly seen as empty.
+                        // Check rooms that have no real members and close them.
+                        // Re-check is allowed after 2 minutes so that a room
+                        // which reverted to a wrong open state (e.g. due to a
+                        // replayed offline heartbeat write) gets cleaned again.
+                        // Skip rooms created in the last 3 minutes — the
+                        // Firestore SDK may deliver the room doc slightly before
+                        // the member sub-document, so a fresh room could be
+                        // wrongly seen as empty.
+                        const cleanCooldown = Duration(minutes: 2);
                         final recentCutoff = DateTime.now()
                             .subtract(const Duration(minutes: 3));
+                        final now = DateTime.now();
                         for (final doc in docs) {
-                          if (!_cleanedRoomIds.add(doc.id)) continue;
+                          final lastCleaned = _lastCleanedAt[doc.id];
+                          if (lastCleaned != null &&
+                              now.difference(lastCleaned) < cleanCooldown) {
+                            continue;
+                          }
                           final createdAt = doc.data()['createdAt'];
                           final isRecent = createdAt is Timestamp &&
                               createdAt.toDate().isAfter(recentCutoff);
                           if (!isRecent) {
+                            _lastCleanedAt[doc.id] = now;
                             unawaited(roomService.closeRoomIfEmpty(doc.id));
                           }
                         }
