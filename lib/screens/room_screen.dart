@@ -1298,125 +1298,122 @@ class _RoomScreenState extends State<RoomScreen>
   }
 
   Widget _buildUsersPanel() {
-    return GestureDetector(
-      onTap: () {},
-      child: Container(
-        width: 330,
-        decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.88),
-          border: Border(
-            right: BorderSide(color: Colors.white.withOpacity(0.10)),
-          ),
+    return Container(
+      width: 330,
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.88),
+        border: Border(
+          right: BorderSide(color: Colors.white.withOpacity(0.10)),
         ),
-        padding: const EdgeInsets.fromLTRB(18, 90, 18, 20),
-        child: Directionality(
-          textDirection: TextDirection.ltr,
-          child: StreamBuilder(
-            stream: _membersPanelStream,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(
-                  child: CircularProgressIndicator(color: Colors.white),
-                );
-              }
-
-              if (snapshot.hasError) {
-                return Center(
-                  child: Text(
-                    'Error: ${snapshot.error}',
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                );
-              }
-
-              final docs = snapshot.data?.docs ?? [];
-              final panelCutoff = DateTime.now().subtract(
-                const Duration(seconds: 75),
+      ),
+      padding: const EdgeInsets.fromLTRB(18, 90, 18, 20),
+      child: Directionality(
+        textDirection: TextDirection.ltr,
+        child: StreamBuilder(
+          stream: _membersPanelStream,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(
+                child: CircularProgressIndicator(color: Colors.white),
               );
-              final roomUsers = docs
-                  .where((doc) {
-                    final data = doc.data();
-                    if (data['isOnline'] != true) return false;
-                    final lastSeen = data['lastSeen'];
-                    if (lastSeen == null) return true;
-                    return (lastSeen as Timestamp)
-                        .toDate()
-                        .isAfter(panelCutoff);
-                  })
-                  .map(
-                    (doc) => roomUserFromFirestore(
-                      doc.data(),
-                      documentId: doc.id,
-                    ),
-                  )
-                  .toList()
-                ..sort((a, b) {
-                  if (a.isLeader != b.isLeader) return a.isLeader ? -1 : 1;
-                  if (a.isMicOn != b.isMicOn) return a.isMicOn ? -1 : 1;
-                  return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-                });
+            }
 
-              if (roomUsers.isEmpty) {
-                return const Center(
-                  child: Text(
-                    'No users',
-                    style: TextStyle(color: Colors.white54),
+            if (snapshot.hasError) {
+              return Center(
+                child: Text(
+                  'Error: ${snapshot.error}',
+                  style: const TextStyle(color: Colors.white),
+                ),
+              );
+            }
+
+            final docs = snapshot.data?.docs ?? [];
+            final panelCutoff = DateTime.now().subtract(
+              const Duration(seconds: 75),
+            );
+            final roomUsers = docs
+                .where((doc) {
+                  final data = doc.data();
+                  if (data['isOnline'] != true) return false;
+                  final lastSeen = data['lastSeen'];
+                  if (lastSeen == null) return true;
+                  return (lastSeen as Timestamp)
+                      .toDate()
+                      .isAfter(panelCutoff);
+                })
+                .map(
+                  (doc) => roomUserFromFirestore(
+                    doc.data(),
+                    documentId: doc.id,
                   ),
+                )
+                .toList()
+              ..sort((a, b) {
+                if (a.isLeader != b.isLeader) return a.isLeader ? -1 : 1;
+                if (a.isMicOn != b.isMicOn) return a.isMicOn ? -1 : 1;
+                return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+              });
+
+            if (roomUsers.isEmpty) {
+              return const Center(
+                child: Text(
+                  'No users',
+                  style: TextStyle(color: Colors.white54),
+                ),
+              );
+            }
+
+            return ListView.builder(
+              itemCount: roomUsers.length,
+              itemBuilder: (context, index) {
+                final user = roomUsers[index];
+
+                final isCurrentUserLeader = roomUsers.any(
+                  (item) =>
+                      item.userId.trim() == currentUserId.trim() &&
+                      item.isLeader,
                 );
-              }
 
-              return ListView.builder(
-                itemCount: roomUsers.length,
-                itemBuilder: (context, index) {
-                  final user = roomUsers[index];
-
-                  final isCurrentUserLeader = roomUsers.any(
-                    (item) =>
-                        item.userId.trim() == currentUserId.trim() &&
-                        item.isLeader,
-                  );
-
-                  return RoomUserTile(
-                    user: user,
-                    isAdmin: isRoomOwner || isCurrentUserLeader,
-                    currentUserId: currentUserId,
-                    currentUserName: currentUserName,
-                    currentUserImage: currentUserImage,
-                    roomService: roomService,
-                    onToggleMicPermission: () {
-                      toggleUserMicPermission(user);
-                    },
-                    onKick: () {
-                      unawaited(kickUser(user));
-                    },
-                    onMakeLeader: () {
-                      unawaited(makeUserLeader(user));
-                    },
-                    onInvite: () {
-                      Navigator.pop(context);
-                      unawaited(_inviteUserFromPanel(user));
-                    },
-                    onPrivateChat: () {
-                      Navigator.pop(context);
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => PrivateChatScreen(
-                            currentUserId: currentUserId,
-                            currentUserName: currentUserName,
-                            currentUserImage: currentUserImage,
-                            otherUserId: user.userId,
-                            otherName: user.name,
-                            otherImage: user.image,
-                          ),
+                return RoomUserTile(
+                  user: user,
+                  isAdmin: isRoomOwner || isCurrentUserLeader,
+                  currentUserId: currentUserId,
+                  currentUserName: currentUserName,
+                  currentUserImage: currentUserImage,
+                  roomService: roomService,
+                  onToggleMicPermission: () {
+                    toggleUserMicPermission(user);
+                  },
+                  onKick: () {
+                    unawaited(kickUser(user));
+                  },
+                  onMakeLeader: () {
+                    unawaited(makeUserLeader(user));
+                  },
+                  onInvite: () {
+                    setState(() => _showUsersPanel = false);
+                    unawaited(_inviteUserFromPanel(user));
+                  },
+                  onPrivateChat: () {
+                    setState(() => _showUsersPanel = false);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => PrivateChatScreen(
+                          currentUserId: currentUserId,
+                          currentUserName: currentUserName,
+                          currentUserImage: currentUserImage,
+                          otherUserId: user.userId,
+                          otherName: user.name,
+                          otherImage: user.image,
                         ),
-                      );
-                    },
-                  );
-                },
-              );
-            },
-          ),
+                      ),
+                    );
+                  },
+                );
+              },
+            );
+          },
         ),
       ),
     );
@@ -1992,13 +1989,6 @@ class _RoomScreenState extends State<RoomScreen>
                   ],
                 ),
               ),
-              if (_showUsersPanel)
-                Positioned.fill(
-                  child: GestureDetector(
-                    onTap: () => setState(() => _showUsersPanel = false),
-                    child: Container(color: Colors.black.withOpacity(0.35)),
-                  ),
-                ),
               AnimatedPositioned(
                 duration: const Duration(milliseconds: 260),
                 curve: Curves.easeOut,
@@ -2008,6 +1998,17 @@ class _RoomScreenState extends State<RoomScreen>
                 width: 330,
                 child: _buildUsersPanel(),
               ),
+              if (_showUsersPanel)
+                Positioned(
+                  left: 330,
+                  right: 0,
+                  top: 0,
+                  bottom: 0,
+                  child: GestureDetector(
+                    onTap: () => setState(() => _showUsersPanel = false),
+                    child: Container(color: Colors.black.withOpacity(0.35)),
+                  ),
+                ),
             ],
           ),
         );
