@@ -105,6 +105,18 @@ class RoomService {
       isLeader: true,
     ));
 
+    unawaited(_recordOpenedRoom(
+      userId: ownerId,
+      roomId: roomRef.id,
+      roomData: {
+        'title': title,
+        'image': image,
+        'ownerId': ownerId,
+        'isOpen': true,
+        'usersCount': 1,
+      },
+    ));
+
     return roomRef.id;
   }
 
@@ -589,23 +601,21 @@ class RoomService {
     required Map<String, dynamic> roomData,
   }) async {
     if (userId.isEmpty || roomId.isEmpty) return;
-    try {
-      await _firestore
-          .collection('users')
-          .doc(userId)
-          .collection('openedRooms')
-          .doc(roomId)
-          .set({
-        'roomId': roomId,
-        'title': roomData['title'] ?? '',
-        'image': roomData['image'] ?? '',
-        'ownerId': roomData['ownerId'] ?? '',
-        'isOpen': roomData['isOpen'] ?? false,
-        'usersCount': roomData['usersCount'] ?? 0,
-        'isRealRoom': true,
-        'lastOpenedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-    } catch (_) {}
+    await _firestore
+        .collection('users')
+        .doc(userId)
+        .collection('openedRooms')
+        .doc(roomId)
+        .set({
+      'roomId': roomId,
+      'title': roomData['title'] ?? '',
+      'image': roomData['image'] ?? '',
+      'ownerId': roomData['ownerId'] ?? '',
+      'isOpen': roomData['isOpen'] ?? false,
+      'usersCount': roomData['usersCount'] ?? 0,
+      'isRealRoom': true,
+      'lastOpenedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
   }
 
   Future<void> leaveRoom({

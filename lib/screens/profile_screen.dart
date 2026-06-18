@@ -1374,7 +1374,17 @@ class _RoomsSectionState extends State<_RoomsSection> {
                         color: Colors.white38, strokeWidth: 2),
                   ),
                 )
-              : docs.isEmpty
+              : snapshot.hasError
+                  ? const SizedBox(
+                      height: 60,
+                      child: Center(
+                        child: Text(
+                          'تعذّر تحميل الغرف',
+                          style: TextStyle(color: Colors.white38, fontSize: 13),
+                        ),
+                      ),
+                    )
+                  : docs.isEmpty
                   ? const SizedBox(
                       height: 60,
                       child: Center(

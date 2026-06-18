@@ -83,6 +83,12 @@ service cloud.firestore {
         allow update: if isOwner(userId);
         allow delete: if isOwner(userId);
       }
+
+      // Opened rooms history: only the owner can read/write
+      match /openedRooms/{roomId} {
+        allow read:  if isOwner(userId);
+        allow write: if isOwner(userId);
+      }
     }
 
     // ─── Rooms ───────────────────────────────────────────────────────────────
